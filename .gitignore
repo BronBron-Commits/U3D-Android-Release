@@ -19,3 +19,6 @@ Thumbs.db
 
 # Logs
 *.log
+app/src/main/res/values-night/
+app/src/main/res/values/themes.xml
+$null
