@@ -696,6 +696,35 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             draw_cube(uMVP, uWorld, proj, view, model);
         }
 
+        /* ================= LEFT ARM ================= */
+        {
+            float t[16], s[16], m1[16], model[16];
+
+            // Position arm relative to torso
+            mat4_translate(t, -0.8f, 0.7f, 0.0f);   // left side, upper torso height
+            mat4_scale(s, 0.25f, 0.9f, 0.25f);      // thin and long
+
+            mat4_mul(m1, rotY, t);
+            mat4_mul(m1, m1, s);
+            mat4_mul(model, root, m1);
+
+            draw_cube(uMVP, uWorld, proj, view, model);
+        }
+
+        /* ================= RIGHT ARM ================= */
+        {
+            float t[16], s[16], m1[16], model[16];
+
+            mat4_translate(t, 0.8f, 0.7f, 0.0f);    // right side
+            mat4_scale(s, 0.25f, 0.9f, 0.25f);
+
+            mat4_mul(m1, rotY, t);
+            mat4_mul(m1, m1, s);
+            mat4_mul(model, root, m1);
+
+            draw_cube(uMVP, uWorld, proj, view, model);
+        }
+
 /* ================= HEAD ================= */
         {
             float t[16], s[16], m1[16], model[16];
