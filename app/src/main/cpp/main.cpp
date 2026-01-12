@@ -67,22 +67,25 @@ const char *axis_fs =
         "}\n";
 
 /* ================= CURSOR SHADERS (SCREEN SPACE) ================= */
-
 const char *cursor_vs =
         "attribute vec2 aPos;\n"
         "attribute vec3 aColor;\n"
+        "uniform vec2 uCursor;\n"
         "varying vec3 vColor;\n"
         "void main(){\n"
         "  vColor = aColor;\n"
-        "  gl_Position = vec4(aPos,0.0,0.0);\n"
+        "  gl_Position = vec4(aPos + uCursor, 0.0, 1.0);\n"
         "}\n";
+
 
 const char *cursor_fs =
         "precision mediump float;\n"
         "varying vec3 vColor;\n"
         "void main(){\n"
-        "  gl_FragColor = vec4(vColor,1.0);\n"
+        "  vec3 glow = vColor * 2.5;\n"
+        "  gl_FragColor = vec4(glow, 1.0);\n"
         "}\n";
+
 
 /* ================= MATH ================= */
 
@@ -129,7 +132,11 @@ struct Engine{
     int width,height;
     int grabbed,selected;
     float last_x,last_y;
+
+    float cursor_ndc_x;
+    float cursor_ndc_y;
 } engine;
+
 
 /* ================= INPUT ================= */
 
@@ -137,6 +144,8 @@ static int32_t handle_input(struct android_app*,AInputEvent* e){
     if(AInputEvent_getType(e)!=AINPUT_EVENT_TYPE_MOTION) return 0;
     float x=AMotionEvent_getX(e,0);
     float y=AMotionEvent_getY(e,0);
+    engine.cursor_ndc_x = (x / engine.width) * 2.0f - 1.0f;
+    engine.cursor_ndc_y = 1.0f - (y / engine.height) * 2.0f;
     float wx=(x/engine.width)*8.0f-4.0f;
     float wy=((engine.height-y)/engine.height)*10.0f-5.0f;
     int a=AMotionEvent_getAction(e)&AMOTION_EVENT_ACTION_MASK;
@@ -169,6 +178,8 @@ void android_main(struct android_app* app){
 
     engine.width=ANativeWindow_getWidth(app->window);
     engine.height=ANativeWindow_getHeight(app->window);
+    engine.cursor_ndc_x = 0.0f;
+    engine.cursor_ndc_y = 0.0f;
 
     engine.display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
     eglInitialize(engine.display,NULL,NULL);
@@ -238,10 +249,11 @@ void android_main(struct android_app* app){
     GLint axis_uMVP=glGetUniformLocation(axis_prog,"uMVP");
 
     /* cursor */
-    float cursor[]={
-            -0.03f,0.0f, 1,1,1, 0.03f,0.0f, 1,1,1,
-            0.0f,-0.03f,1,1,1, 0.0f,0.03f,1,1,1
+    float cursor[] = {
+            -0.05f,0.0f, 1,1,1,   0.05f,0.0f, 1,1,1,
+            0.0f,-0.05f,1,1,1,   0.0f,0.05f,1,1,1
     };
+    ;
 
     GLuint cursor_vbo;
     glGenBuffers(1,&cursor_vbo);
@@ -254,6 +266,8 @@ void android_main(struct android_app* app){
     glBindAttribLocation(cursor_prog,0,"aPos");
     glBindAttribLocation(cursor_prog,1,"aColor");
     glLinkProgram(cursor_prog);
+    GLint uCursor = glGetUniformLocation(cursor_prog, "uCursor");
+
 
     float proj[16],view[16],tmp[16],tr[16],ry[16];
     mat4_perspective(proj,1.1f,(float)engine.width/engine.height,0.1f,50);
@@ -307,6 +321,9 @@ void android_main(struct android_app* app){
         /* cursor overlay */
         glDisable(GL_DEPTH_TEST);
         glUseProgram(cursor_prog);
+        glUniform2f(uCursor,
+                    engine.cursor_ndc_x,
+                    engine.cursor_ndc_y);
         glBindBuffer(GL_ARRAY_BUFFER,cursor_vbo);
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,5*sizeof(float),(void*)0);
         glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,5*sizeof(float),(void*)(2*sizeof(float)));
