@@ -384,16 +384,17 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
         float proj[16], view[16], tmp[16], tr[16], ry[16], rx[16], rot[16];
 
-        mat4_perspective(proj, 1.1f, (float) engine.width / engine.height, 0.1f, 50);
-        mat4_rotate_y(ry, engine.cam_yaw);
-        mat4_rotate_x(rx, engine.cam_pitch);
-        mat4_mul(rot, rx, ry);
-        mat4_translate(tr, 0, -0.6f, -7.5f);
-        mat4_mul(view, tr, rot);
+    /* ===== PROJECTION (DO THIS ONCE) ===== */
+    mat4_perspective(
+            proj,
+            1.1f,
+            (float)engine.width / (float)engine.height,
+            0.1f,
+            50.0f
+    );
 
 
-
-        agents[0].x = -1.3f;
+    agents[0].x = -1.3f;
         agents[1].x = 1.3f;
 
         while (true) {
@@ -406,6 +407,14 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
                 agents[i].rot += agents[i].rot_vel;
                 agents[i].rot_vel *= ROT_DAMP;
             }
+
+            /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
+            mat4_rotate_y(ry, engine.cam_yaw);
+            mat4_rotate_x(rx, engine.cam_pitch);
+            mat4_mul(rot, rx, ry);
+            mat4_translate(tr, 0, -0.6f, -7.5f);
+            mat4_mul(view, tr, rot);
+
 
             glClearColor(0.05f, 0.05f, 0.08f, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
