@@ -12,11 +12,17 @@
 #define NUM_AGENTS 2
 #define PICK_RADIUS 0.9f
 #define ROT_SENS 0.005f
-#define ROT_DAMP 0.96f
+#define ROT_DAMP 0.82f
 #define JOY_RADIUS   0.25f   // size in NDC
 #define JOY_Y_OFFSET -0.75f  // bottom of screen
 #define JOY_LEFT_X  -0.6f
 #define JOY_RIGHT_X  0.6f
+#define LOCK_Y  0.85f
+#define LOCK_SPACING 0.18f
+#define LOCK_SIZE 0.06f
+
+#define CAM_LOCK_START_X  -0.3f
+#define OBJ_LOCK_START_X   0.3f
 
 /* ================= WORLD SHADERS ================= */
 
@@ -89,6 +95,29 @@ const char *cursor_fs =
         "  vec3 glow = vColor * 2.5;\n"
         "  gl_FragColor = vec4(glow, 1.0);\n"
         "}\n";
+
+/* ================= SKYBOX SHADERS ================= */
+
+const char *sky_vs =
+        "attribute vec3 aPos;\n"
+        "uniform mat4 uMVP;\n"
+        "varying float vY;\n"
+        "void main(){\n"
+        "  vY = aPos.y;\n"
+        "  gl_Position = uMVP * vec4(aPos, 1.0);\n"
+        "}\n";
+
+const char *sky_fs =
+        "precision mediump float;\n"
+        "varying float vY;\n"
+        "void main(){\n"
+        "  vec3 horizon = vec3(0.45, 0.65, 0.95);\n"
+        "  vec3 zenith  = vec3(0.05, 0.10, 0.25);\n"
+        "  float t = clamp(1.0 - ((vY + 1.0) * 0.5), 0.0, 1.0);\n"
+        "  vec3 col = mix(horizon, zenith, t);\n"
+        "  gl_FragColor = vec4(col, 1.0);\n"
+        "}\n";
+
 
 
 /* ================= MATH ================= */
@@ -167,12 +196,23 @@ struct Engine{
     float cam_x;
     float cam_y;
     float cam_z;
+    /* ===== AXIS LOCKS ===== */
+    bool lock_cam_x;
+    bool lock_cam_y;
+    bool lock_cam_z;
+
+    bool lock_obj_x;
+    bool lock_obj_y;
+    bool lock_obj_z;
 
 } engine;
 
 
 
 /* ================= INPUT ================= */
+static bool hit_box(float x, float y, float bx, float by) {
+    return fabsf(x - bx) < LOCK_SIZE && fabsf(y - by) < LOCK_SIZE;
+}
 
 static int32_t handle_input(struct android_app*,AInputEvent* e) {
     if (AInputEvent_getType(e) != AINPUT_EVENT_TYPE_MOTION) return 0;
@@ -200,15 +240,38 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         engine.joyR_x = dxR / JOY_RADIUS;
         engine.joyR_y = dyR / JOY_RADIUS;
     }
+    if ((AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_DOWN) {
+
+        /* ---- CAMERA LOCKS ---- */
+        if (hit_box(cx, cy, CAM_LOCK_START_X + 0*LOCK_SPACING, LOCK_Y))
+            engine.lock_cam_x = !engine.lock_cam_x;
+
+        if (hit_box(cx, cy, CAM_LOCK_START_X + 1*LOCK_SPACING, LOCK_Y))
+            engine.lock_cam_y = !engine.lock_cam_y;
+
+        if (hit_box(cx, cy, CAM_LOCK_START_X + 2*LOCK_SPACING, LOCK_Y))
+            engine.lock_cam_z = !engine.lock_cam_z;
+
+        /* ---- OBJECT LOCKS ---- */
+        if (hit_box(cx, cy, OBJ_LOCK_START_X + 0*LOCK_SPACING, LOCK_Y))
+            engine.lock_obj_x = !engine.lock_obj_x;
+
+        if (hit_box(cx, cy, OBJ_LOCK_START_X + 1*LOCK_SPACING, LOCK_Y))
+            engine.lock_obj_y = !engine.lock_obj_y;
+
+        if (hit_box(cx, cy, OBJ_LOCK_START_X + 2*LOCK_SPACING, LOCK_Y))
+            engine.lock_obj_z = !engine.lock_obj_z;
+    }
 
     if (engine.joyR_active) {
         float look_sens = 0.035f;
 
-        // Left / Right look
-        engine.cam_yaw += engine.joyR_x * look_sens;
+        if (!engine.lock_cam_x)
+            engine.cam_yaw += engine.joyR_x * look_sens;
 
-        // Up / Down look (invert if desired)
-        engine.cam_pitch -= engine.joyR_y * look_sens;
+        if (!engine.lock_cam_y)
+            engine.cam_pitch -= engine.joyR_y * look_sens;
+
 
         // Clamp pitch so camera never flips
         if (engine.cam_pitch > 1.4f)  engine.cam_pitch = 1.4f;
@@ -232,10 +295,23 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
     if (a == AMOTION_EVENT_ACTION_MOVE && engine.grabbed != -1) {
         float dx = x - engine.last_x;
         engine.last_x = x;
-        agents[engine.grabbed].x = wx;
-        agents[engine.grabbed].y = wy;
-        agents[engine.grabbed].rot_vel += dx * ROT_SENS;
+
+        if (!engine.lock_obj_x)
+            agents[engine.grabbed].x = wx;
+
+        if (!engine.lock_obj_y)
+            agents[engine.grabbed].y = wy;
+
+        agents[engine.grabbed].rot_vel += dx * (ROT_SENS * 0.35f);
     }
+
+/* Clamp angular velocity */
+    if (agents[engine.grabbed].rot_vel > 0.08f)
+        agents[engine.grabbed].rot_vel = 0.08f;
+
+    if (agents[engine.grabbed].rot_vel < -0.08f)
+        agents[engine.grabbed].rot_vel = -0.08f;
+
     if (a == AMOTION_EVENT_ACTION_UP) {
         engine.joyL_active = false;
         engine.joyR_active = false;
@@ -330,6 +406,34 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glGenBuffers(1, &vbo);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
+
+    /* ================= SKYBOX GEOMETRY ================= */
+
+    float sky_cube[] = {
+            -1,-1,-1,  1,-1,-1,  1, 1,-1,
+            -1,-1,-1,  1, 1,-1, -1, 1,-1,
+
+            -1,-1, 1,  1,-1, 1,  1, 1, 1,
+            -1,-1, 1,  1, 1, 1, -1, 1, 1,
+
+            -1,-1,-1, -1, 1,-1, -1, 1, 1,
+            -1,-1,-1, -1, 1, 1, -1,-1, 1,
+
+            1,-1,-1,  1, 1,-1,  1, 1, 1,
+            1,-1,-1,  1, 1, 1,  1,-1, 1,
+
+            -1,-1,-1, -1,-1, 1,  1,-1, 1,
+            -1,-1,-1,  1,-1, 1,  1,-1,-1,
+
+            -1, 1,-1, -1, 1, 1,  1, 1, 1,
+            -1, 1,-1,  1, 1, 1,  1, 1,-1
+    };
+
+    GLuint sky_vbo;
+    glGenBuffers(1, &sky_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, sky_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(sky_cube), sky_cube, GL_STATIC_DRAW);
+
     /* ================= JOYSTICK RING ================= */
 #define RING_SEGMENTS 48
 
@@ -358,6 +462,14 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
     glGenBuffers(1, &joy_ring_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, joy_ring_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(joy_ring), joy_ring, GL_STATIC_DRAW);
+    GLuint sky_prog = glCreateProgram();
+    glAttachShader(sky_prog, compile(GL_VERTEX_SHADER, sky_vs));
+    glAttachShader(sky_prog, compile(GL_FRAGMENT_SHADER, sky_fs));
+    glBindAttribLocation(sky_prog, 0, "aPos");
+    glLinkProgram(sky_prog);
+
+    GLint sky_uMVP = glGetUniformLocation(sky_prog, "uMVP");
+
 
     /* axis */
         float axis[] = {
@@ -390,21 +502,36 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glBindBuffer(GL_ARRAY_BUFFER, cursor_vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cursor), cursor, GL_STATIC_DRAW);
     /* ================= JOYSTICK GEOMETRY ================= */
-/* ================= JOYSTICK CROSS (FULL AXES) ================= */
-    float joy_cross[] = {
-            /* Horizontal bar */
-            -0.08f,  0.0f,   1.0f, 0.0f, 0.7f,
-            0.08f,  0.0f,   1.0f, 0.0f, 0.7f,
+/* ================= JOYSTICK THUMB CIRCLE ================= */
+#define THUMB_RADIUS 0.06f
+#define THUMB_SEGMENTS 32
 
-            /* Vertical bar */
-            0.0f,  -0.08f,  1.0f, 0.0f, 0.7f,
-            0.0f,   0.08f,  1.0f, 0.0f, 0.7f
-    };
+    float joy_thumb[THUMB_SEGMENTS * 5 * 2];
 
-    GLuint joy_vbo;
-    glGenBuffers(1, &joy_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, joy_vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(joy_cross), joy_cross, GL_STATIC_DRAW);
+    for (int i = 0; i < THUMB_SEGMENTS; i++) {
+        float a0 = (float)i / THUMB_SEGMENTS * 2.0f * M_PI;
+        float a1 = (float)(i + 1) / THUMB_SEGMENTS * 2.0f * M_PI;
+
+        int o = i * 10;
+
+        joy_thumb[o + 0] = cosf(a0) * THUMB_RADIUS;
+        joy_thumb[o + 1] = sinf(a0) * THUMB_RADIUS;
+        joy_thumb[o + 2] = 1.0f;
+        joy_thumb[o + 3] = 0.2f;
+        joy_thumb[o + 4] = 1.0f;
+
+        joy_thumb[o + 5] = cosf(a1) * THUMB_RADIUS;
+        joy_thumb[o + 6] = sinf(a1) * THUMB_RADIUS;
+        joy_thumb[o + 7] = 1.0f;
+        joy_thumb[o + 8] = 0.2f;
+        joy_thumb[o + 9] = 1.0f;
+    }
+
+    GLuint joy_thumb_vbo;
+    glGenBuffers(1, &joy_thumb_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, joy_thumb_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(joy_thumb), joy_thumb, GL_STATIC_DRAW);
+
 
 
 
@@ -457,7 +584,27 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
 
         /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
-            mat4_rotate_y(ry, engine.cam_yaw);
+        /* ===== CAMERA MOVE (LEFT JOYSTICK – EVERY FRAME) ===== */
+        if (engine.joyL_active) {
+            float move_speed = 0.06f;
+
+            // Camera-relative forward & right vectors (yaw only)
+            float forward_x = sinf(engine.cam_yaw);
+            float forward_z = cosf(engine.cam_yaw);
+
+            float right_x   = cosf(engine.cam_yaw);
+            float right_z   = -sinf(engine.cam_yaw);
+
+            // Strafe (X)
+            if (!engine.lock_cam_x)
+                engine.cam_x += (right_x * engine.joyL_x) * move_speed;
+
+            // Forward / backward (Z)
+            if (!engine.lock_cam_z)
+                engine.cam_z += (forward_z * engine.joyL_y) * move_speed;
+        }
+
+        mat4_rotate_y(ry, engine.cam_yaw);
             mat4_rotate_x(rx, engine.cam_pitch);
             mat4_mul(rot, rx, ry);
             mat4_translate(tr, engine.cam_x, engine.cam_y, engine.cam_z);
@@ -466,8 +613,38 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
             glClearColor(0.05f, 0.05f, 0.08f, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        /* ================= SKYBOX DRAW ================= */
+        glDepthMask(GL_FALSE);      // do NOT write depth
+        glUseProgram(sky_prog);
 
-            /* axes */
+        glBindBuffer(GL_ARRAY_BUFFER, sky_vbo);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+        glEnableVertexAttribArray(0);
+
+/* Build skybox view (rotation only — no translation) */
+        float sky_view[16];
+        float sky_mvp[16];
+        float sky_tmp[16];
+
+        mat4_rotate_y(ry, engine.cam_yaw);
+        mat4_rotate_x(rx, engine.cam_pitch);
+        mat4_mul(sky_view, rx, ry);
+
+/* MVP = proj * sky_view */
+        mat4_mul(sky_tmp, sky_view, (float[16]){
+                1,0,0,0,
+                0,1,0,0,
+                0,0,1,0,
+                0,0,0,1
+        });
+        mat4_mul(sky_mvp, proj, sky_tmp);
+
+        glUniformMatrix4fv(sky_uMVP, 1, GL_FALSE, sky_mvp);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        glDepthMask(GL_TRUE);       // restore depth writes
+
+        /* axes */
             glUseProgram(axis_prog);
             glBindBuffer(GL_ARRAY_BUFFER, axis_vbo);
             glDisableVertexAttribArray(2);
@@ -576,56 +753,49 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             glEnableVertexAttribArray(1);
             glDrawArrays(GL_LINES, 0, 4);
             glEnable(GL_DEPTH_TEST);
+/* ================= JOYSTICKS ================= */
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(cursor_prog);
 
-            /* ================= JOYSTICKS ================= */
-            glDisable(GL_DEPTH_TEST);
-            glUseProgram(cursor_prog);
-
-/* ---- RINGS ---- */
-            glBindBuffer(GL_ARRAY_BUFFER, joy_ring_vbo);
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(2*sizeof(float)));
-            glEnableVertexAttribArray(0);
-            glEnableVertexAttribArray(1);
+/* ---- OUTER RINGS ---- */
+        glBindBuffer(GL_ARRAY_BUFFER, joy_ring_vbo);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(2*sizeof(float)));
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
 
 /* Left ring */
-            glUniform2f(uCursor, JOY_LEFT_X, JOY_Y_OFFSET);
-            glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
+        glUniform2f(uCursor, JOY_LEFT_X, JOY_Y_OFFSET);
+        glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
 
 /* Right ring */
-            glUniform2f(uCursor, JOY_RIGHT_X, JOY_Y_OFFSET);
-            glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
+        glUniform2f(uCursor, JOY_RIGHT_X, JOY_Y_OFFSET);
+        glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
 
-/* ---- CROSSES ---- */
-            glBindBuffer(GL_ARRAY_BUFFER, joy_vbo);
-
-/* Left base */
-            glUniform2f(uCursor, JOY_LEFT_X, JOY_Y_OFFSET);
-            glDrawArrays(GL_LINES, 0, 4);
+/* ---- THUMB CIRCLES ---- */
+        glBindBuffer(GL_ARRAY_BUFFER, joy_thumb_vbo);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(2*sizeof(float)));
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
 
 /* Left thumb */
-            glUniform2f(
-                    uCursor,
-                    JOY_LEFT_X + engine.joyL_x * JOY_RADIUS,
-                    JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS
-            );
-            glDrawArrays(GL_LINES, 0, 4);
-
-/* Right base */
-            glUniform2f(uCursor, JOY_RIGHT_X, JOY_Y_OFFSET);
-            glDrawArrays(GL_LINES, 0, 4);
+        glUniform2f(
+                uCursor,
+                JOY_LEFT_X  + engine.joyL_x * JOY_RADIUS,
+                JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS
+        );
+        glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
 
 /* Right thumb */
-            glUniform2f(
-                    uCursor,
-                    JOY_RIGHT_X + engine.joyR_x * JOY_RADIUS,
-                    JOY_Y_OFFSET + engine.joyR_y * JOY_RADIUS
-            );
-            glDrawArrays(GL_LINES, 0, 4);
+        glUniform2f(
+                uCursor,
+                JOY_RIGHT_X + engine.joyR_x * JOY_RADIUS,
+                JOY_Y_OFFSET + engine.joyR_y * JOY_RADIUS
+        );
+        glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
 
-            glEnable(GL_DEPTH_TEST);
-
-
+        glEnable(GL_DEPTH_TEST);
 
             eglSwapBuffers(engine.display, engine.surface);
             usleep(16000);
