@@ -151,6 +151,10 @@ struct Engine{
     bool  joyR_active;
     float cam_yaw;
     float cam_pitch;
+    float cam_x;
+    float cam_y;
+    float cam_z;
+
 } engine;
 
 
@@ -171,7 +175,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
     float dyL = cy - JOY_Y_OFFSET;
     if (dxL * dxL + dyL * dyL < JOY_RADIUS * JOY_RADIUS) {
         engine.joyL_active = true;
-        engine.joyL_x = dxL / JOY_RADIUS;
+        engine.joyL_x = -dxL / JOY_RADIUS;
         engine.joyL_y = dyL / JOY_RADIUS;
     }
 
@@ -185,12 +189,19 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
     }
 
     if (engine.joyR_active) {
-        engine.cam_yaw += engine.joyR_x * 0.04f;
-        engine.cam_pitch += engine.joyR_y * 0.04f;
+        float look_sens = 0.035f;
 
-        if (engine.cam_pitch > 1.4f) engine.cam_pitch = 1.4f;
+        // Left / Right look
+        engine.cam_yaw += engine.joyR_x * look_sens;
+
+        // Up / Down look (invert if desired)
+        engine.cam_pitch -= engine.joyR_y * look_sens;
+
+        // Clamp pitch so camera never flips
+        if (engine.cam_pitch > 1.4f)  engine.cam_pitch = 1.4f;
         if (engine.cam_pitch < -1.4f) engine.cam_pitch = -1.4f;
     }
+
 
 
     float wx = (x / engine.width) * 8.0f - 4.0f;
@@ -235,12 +246,18 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
         engine.width = ANativeWindow_getWidth(app->window);
         engine.height = ANativeWindow_getHeight(app->window);
-        engine.cursor_ndc_x = 0.0f;
-        engine.cursor_ndc_y = 0.0f;
-        engine.cam_yaw = 0.6f;   // matches your old fixed rotation
-        engine.cam_pitch = 0.0f;
+    engine.cursor_ndc_x = 0.0f;
+    engine.cursor_ndc_y = 0.0f;
 
-        engine.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+/* ===== INITIAL CAMERA POSE (GOOD DEFAULT) ===== */
+    engine.cam_yaw   = 0.0f;     // facing +Z
+    engine.cam_pitch = -0.25f;   // slight downward tilt
+    engine.cam_x     = 0.0f;
+    engine.cam_y     = -0.3f;
+    engine.cam_z     = -6.0f;
+
+
+    engine.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
         eglInitialize(engine.display, NULL, NULL);
 
         EGLConfig cfg;
@@ -360,17 +377,22 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glBindBuffer(GL_ARRAY_BUFFER, cursor_vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cursor), cursor, GL_STATIC_DRAW);
     /* ================= JOYSTICK GEOMETRY ================= */
+/* ================= JOYSTICK CROSS (FULL AXES) ================= */
     float joy_cross[] = {
-            -0.06f,  0.0f,  1.0f, 0.0f, 0.7f,
-            0.06f,  0.0f,  1.0f, 0.0f, 0.7f,
-            0.0f,  -0.06f, 1.0f, 0.0f, 0.7f,
-            0.0f,   0.06f, 1.0f, 0.0f, 0.7f
+            /* Horizontal bar */
+            -0.08f,  0.0f,   1.0f, 0.0f, 0.7f,
+            0.08f,  0.0f,   1.0f, 0.0f, 0.7f,
+
+            /* Vertical bar */
+            0.0f,  -0.08f,  1.0f, 0.0f, 0.7f,
+            0.0f,   0.08f,  1.0f, 0.0f, 0.7f
     };
 
     GLuint joy_vbo;
     glGenBuffers(1, &joy_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, joy_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(joy_cross), joy_cross, GL_STATIC_DRAW);
+
 
 
     GLuint cursor_prog = glCreateProgram();
@@ -384,14 +406,15 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
         float proj[16], view[16], tmp[16], tr[16], ry[16], rx[16], rot[16];
 
-    /* ===== PROJECTION (DO THIS ONCE) ===== */
+    float fov = 1.35f;  // ~77 degrees (wide-angle)
     mat4_perspective(
             proj,
-            1.1f,
+            fov,
             (float)engine.width / (float)engine.height,
             0.1f,
             50.0f
     );
+
 
 
     agents[0].x = -1.3f;
@@ -412,7 +435,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             mat4_rotate_y(ry, engine.cam_yaw);
             mat4_rotate_x(rx, engine.cam_pitch);
             mat4_mul(rot, rx, ry);
-            mat4_translate(tr, 0, -0.6f, -7.5f);
+            mat4_translate(tr, engine.cam_x, engine.cam_y, engine.cam_z);
             mat4_mul(view, tr, rot);
 
 
@@ -447,6 +470,27 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             for (int i = 0; i < NUM_AGENTS; i++) {
                 float root[16], rot[16], scale[16], tmp2[16], model[16];
                 mat4_translate(root, agents[i].x, agents[i].y, 0);
+                /* ===== CAMERA MOVE (ONCE PER FRAME) ===== */
+                if (engine.joyL_active) {
+                    float speed = 0.06f;
+
+                    float forward_x = sinf(engine.cam_yaw);
+                    float forward_z = cosf(engine.cam_yaw);
+
+                    float right_x = cosf(engine.cam_yaw);
+                    float right_z = -sinf(engine.cam_yaw);
+
+                    engine.cam_x += (right_x * engine.joyL_x + forward_x * engine.joyL_y) * speed;
+                    engine.cam_z += (right_z * engine.joyL_x + forward_z * engine.joyL_y) * speed;
+                }
+
+/* ===== CAMERA UPDATE (EVERY FRAME) ===== */
+                mat4_rotate_y(ry, engine.cam_yaw);
+                mat4_rotate_x(rx, engine.cam_pitch);
+                mat4_mul(rot, rx, ry);
+                mat4_translate(tr, engine.cam_x, engine.cam_y, engine.cam_z);
+                mat4_mul(view, tr, rot);
+
                 mat4_rotate_y(rot, agents[i].rot);
                 mat4_scale(scale, 0.8f, 1.2f, 0.8f);
                 mat4_mul(tmp2, rot, scale);
