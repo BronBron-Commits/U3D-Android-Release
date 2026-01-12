@@ -47,7 +47,7 @@ const char *fs_src =
         "  vec3 H = normalize(-L+V);\n"
         "  float s = pow(max(dot(N,H),0.0),24.0);\n"
         "  vec3 base = vColor*(0.25+d*0.75)+vec3(s*0.35);\n"
-        "  vec3 highlight = mix(base,vec3(1.0,1.0,0.3),uSelected);\n"
+        "  vec3 highlight = base + uSelected * vec3(0.4, 0.4, 0.2);\n"
         "  gl_FragColor = vec4(highlight,1.0);\n"
         "}\n";
 
@@ -126,7 +126,20 @@ void draw_cube(GLint uMVP,GLint uWorld,float *proj,float *view,float *model){
 
 /* ================= DATA ================= */
 
-typedef struct{ float x,y,rot,rot_vel; } Agent;
+typedef struct {
+    float x, y;
+    float rot, rot_vel;
+
+    /* Procedural parameters */
+    float height;
+    float width;
+    float depth;
+
+    float r, g, b;
+
+    float anim_phase;
+} Agent;
+
 Agent agents[NUM_AGENTS];
 
 GLuint compile(GLenum t,const char *s){
@@ -419,19 +432,31 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
     agents[0].x = -1.3f;
         agents[1].x = 1.3f;
+    /* ===== PROCEDURAL CHARACTER SETUP ===== */
+    agents[0].height = 1.4f;
+    agents[0].width  = 0.7f;
+    agents[0].depth  = 0.6f;
+    agents[0].r = 0.9f; agents[0].g = 0.3f; agents[0].b = 0.3f;
+    agents[0].anim_phase = 0.0f;
 
-        while (true) {
+    agents[1].height = 0.9f;
+    agents[1].width  = 1.0f;
+    agents[1].depth  = 1.0f;
+    agents[1].r = 0.3f; agents[1].g = 0.8f; agents[1].b = 1.0f;
+    agents[1].anim_phase = 1.6f;
+
+    while (true) {
             int ev;
             android_poll_source *src;
             while (ALooper_pollOnce(0, NULL, &ev, (void **) &src) >= 0)
                 if (src)
                     src->process(app, src);
-            for (int i = 0; i < NUM_AGENTS; i++) {
-                agents[i].rot += agents[i].rot_vel;
-                agents[i].rot_vel *= ROT_DAMP;
-            }
+        for (int i = 0; i < NUM_AGENTS; i++) {
+            agents[i].rot += agents[i].rot_vel;
+        }
 
-            /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
+
+        /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
             mat4_rotate_y(ry, engine.cam_yaw);
             mat4_rotate_x(rx, engine.cam_pitch);
             mat4_mul(rot, rx, ry);
@@ -467,39 +492,77 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
                                   (void *) (3 * sizeof(float)));
             glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float),
                                   (void *) (6 * sizeof(float)));
-            for (int i = 0; i < NUM_AGENTS; i++) {
-                float root[16], rot[16], scale[16], tmp2[16], model[16];
-                mat4_translate(root, agents[i].x, agents[i].y, 0);
-                /* ===== CAMERA MOVE (ONCE PER FRAME) ===== */
-                if (engine.joyL_active) {
-                    float speed = 0.06f;
+        /* ================= CHARACTER (MULTI-PRIMITIVE) ================= */
 
-                    float forward_x = sinf(engine.cam_yaw);
-                    float forward_z = cosf(engine.cam_yaw);
+        int i = 0;  // single character for now
 
-                    float right_x = cosf(engine.cam_yaw);
-                    float right_z = -sinf(engine.cam_yaw);
+/* Root transform */
+        float root[16];
+        mat4_translate(root, agents[i].x, agents[i].y, 0);
 
-                    engine.cam_x += (right_x * engine.joyL_x + forward_x * engine.joyL_y) * speed;
-                    engine.cam_z += (right_z * engine.joyL_x + forward_z * engine.joyL_y) * speed;
-                }
+/* Shared rotation */
+        float rotY[16];
+        mat4_rotate_y(rotY, agents[i].rot);
 
-/* ===== CAMERA UPDATE (EVERY FRAME) ===== */
-                mat4_rotate_y(ry, engine.cam_yaw);
-                mat4_rotate_x(rx, engine.cam_pitch);
-                mat4_mul(rot, rx, ry);
-                mat4_translate(tr, engine.cam_x, engine.cam_y, engine.cam_z);
-                mat4_mul(view, tr, rot);
+/* ================= TORSO ================= */
+        {
+            float t[16], s[16], m1[16], model[16];
 
-                mat4_rotate_y(rot, agents[i].rot);
-                mat4_scale(scale, 0.8f, 1.2f, 0.8f);
-                mat4_mul(tmp2, rot, scale);
-                mat4_mul(model, root, tmp2);
-                glUniform1f(uSelected, (float) (i == engine.selected));
-                draw_cube(uMVP, uWorld, proj, view, model);
-            }
+            mat4_translate(t, 0.0f, 0.6f, 0.0f);
+            mat4_scale(s, 0.9f, 1.2f, 0.5f);
 
-            /* cursor overlay */
+            mat4_mul(m1, rotY, t);
+            mat4_mul(m1, m1, s);
+            mat4_mul(model, root, m1);
+
+            glUniform1f(uSelected, 0.0f);
+            draw_cube(uMVP, uWorld, proj, view, model);
+        }
+
+/* ================= HEAD ================= */
+        {
+            float t[16], s[16], m1[16], model[16];
+
+            mat4_translate(t, 0.0f, 1.5f, 0.0f);
+            mat4_scale(s, 0.5f, 0.5f, 0.5f);
+
+            mat4_mul(m1, rotY, t);
+            mat4_mul(m1, m1, s);
+            mat4_mul(model, root, m1);
+
+            draw_cube(uMVP, uWorld, proj, view, model);
+        }
+
+/* ================= LEFT LEG ================= */
+        {
+            float t[16], s[16], m1[16], model[16];
+
+            mat4_translate(t, -0.3f, -0.3f, 0.0f);
+            mat4_scale(s, 0.3f, 0.8f, 0.3f);
+
+            mat4_mul(m1, rotY, t);
+            mat4_mul(m1, m1, s);
+            mat4_mul(model, root, m1);
+
+            draw_cube(uMVP, uWorld, proj, view, model);
+        }
+
+/* ================= RIGHT LEG ================= */
+        {
+            float t[16], s[16], m1[16], model[16];
+
+            mat4_translate(t, 0.3f, -0.3f, 0.0f);
+            mat4_scale(s, 0.3f, 0.8f, 0.3f);
+
+            mat4_mul(m1, rotY, t);
+            mat4_mul(m1, m1, s);
+            mat4_mul(model, root, m1);
+
+            draw_cube(uMVP, uWorld, proj, view, model);
+        }
+
+
+        /* cursor overlay */
             glDisable(GL_DEPTH_TEST);
             glUseProgram(cursor_prog);
             glUniform2f(uCursor,
