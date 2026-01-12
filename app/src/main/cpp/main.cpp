@@ -13,6 +13,10 @@
 #define PICK_RADIUS 0.9f
 #define ROT_SENS 0.005f
 #define ROT_DAMP 0.96f
+#define JOY_RADIUS   0.25f   // size in NDC
+#define JOY_Y_OFFSET -0.75f  // bottom of screen
+#define JOY_LEFT_X  -0.6f
+#define JOY_RIGHT_X  0.6f
 
 /* ================= WORLD SHADERS ================= */
 
@@ -93,6 +97,13 @@ void mat4_identity(float *m){ memset(m,0,64); m[0]=m[5]=m[10]=m[15]=1; }
 void mat4_translate(float *m,float x,float y,float z){ mat4_identity(m); m[12]=x; m[13]=y; m[14]=z; }
 void mat4_scale(float *m,float x,float y,float z){ mat4_identity(m); m[0]=x; m[5]=y; m[10]=z; }
 void mat4_rotate_y(float *m,float a){ mat4_identity(m); m[0]=cosf(a); m[2]=-sinf(a); m[8]=sinf(a); m[10]=cosf(a); }
+void mat4_rotate_x(float *m,float a){
+    mat4_identity(m);
+    m[5] = cosf(a);
+    m[6] = sinf(a);
+    m[9] = -sinf(a);
+    m[10]= cosf(a);
+}
 void mat4_mul(float *o,float *a,float *b){
     for(int c=0;c<4;c++) for(int r=0;r<4;r++)
             o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];
@@ -132,207 +143,375 @@ struct Engine{
     int width,height;
     int grabbed,selected;
     float last_x,last_y;
-
     float cursor_ndc_x;
     float cursor_ndc_y;
+    float joyL_x, joyL_y;
+    float joyR_x, joyR_y;
+    bool  joyL_active;
+    bool  joyR_active;
+    float cam_yaw;
+    float cam_pitch;
 } engine;
+
 
 
 /* ================= INPUT ================= */
 
-static int32_t handle_input(struct android_app*,AInputEvent* e){
-    if(AInputEvent_getType(e)!=AINPUT_EVENT_TYPE_MOTION) return 0;
-    float x=AMotionEvent_getX(e,0);
-    float y=AMotionEvent_getY(e,0);
+static int32_t handle_input(struct android_app*,AInputEvent* e) {
+    if (AInputEvent_getType(e) != AINPUT_EVENT_TYPE_MOTION) return 0;
+    float x = AMotionEvent_getX(e, 0);
+    float y = AMotionEvent_getY(e, 0);
     engine.cursor_ndc_x = (x / engine.width) * 2.0f - 1.0f;
     engine.cursor_ndc_y = 1.0f - (y / engine.height) * 2.0f;
-    float wx=(x/engine.width)*8.0f-4.0f;
-    float wy=((engine.height-y)/engine.height)*10.0f-5.0f;
-    int a=AMotionEvent_getAction(e)&AMOTION_EVENT_ACTION_MASK;
-    if(a==AMOTION_EVENT_ACTION_DOWN){
-        engine.last_x=x; engine.last_y=y;
-        engine.grabbed=-1; engine.selected=-1;
-        for(int i=0;i<NUM_AGENTS;i++)
-            if(fabsf(wx-agents[i].x)<PICK_RADIUS&&fabsf(wy-agents[i].y)<PICK_RADIUS)
-                engine.grabbed=engine.selected=i;
+    float cx = engine.cursor_ndc_x;
+    float cy = engine.cursor_ndc_y;
+
+/* Left joystick */
+    float dxL = cx - JOY_LEFT_X;
+    float dyL = cy - JOY_Y_OFFSET;
+    if (dxL * dxL + dyL * dyL < JOY_RADIUS * JOY_RADIUS) {
+        engine.joyL_active = true;
+        engine.joyL_x = dxL / JOY_RADIUS;
+        engine.joyL_y = dyL / JOY_RADIUS;
     }
-    if(a==AMOTION_EVENT_ACTION_MOVE&&engine.grabbed!=-1){
-        float dx=x-engine.last_x; engine.last_x=x;
-        agents[engine.grabbed].x=wx;
-        agents[engine.grabbed].y=wy;
-        agents[engine.grabbed].rot_vel+=dx*ROT_SENS;
+
+/* Right joystick */
+    float dxR = cx - JOY_RIGHT_X;
+    float dyR = cy - JOY_Y_OFFSET;
+    if (dxR * dxR + dyR * dyR < JOY_RADIUS * JOY_RADIUS) {
+        engine.joyR_active = true;
+        engine.joyR_x = dxR / JOY_RADIUS;
+        engine.joyR_y = dyR / JOY_RADIUS;
     }
-    if(a==AMOTION_EVENT_ACTION_UP) engine.grabbed=-1;
+
+    if (engine.joyR_active) {
+        engine.cam_yaw += engine.joyR_x * 0.04f;
+        engine.cam_pitch += engine.joyR_y * 0.04f;
+
+        if (engine.cam_pitch > 1.4f) engine.cam_pitch = 1.4f;
+        if (engine.cam_pitch < -1.4f) engine.cam_pitch = -1.4f;
+    }
+
+
+    float wx = (x / engine.width) * 8.0f - 4.0f;
+    float wy = ((engine.height - y) / engine.height) * 10.0f - 5.0f;
+    int a = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
+    if (a == AMOTION_EVENT_ACTION_DOWN) {
+        engine.last_x = x;
+        engine.last_y = y;
+        engine.grabbed = -1;
+        engine.selected = -1;
+        for (int i = 0; i < NUM_AGENTS; i++)
+            if (fabsf(wx - agents[i].x) < PICK_RADIUS && fabsf(wy - agents[i].y) < PICK_RADIUS)
+                engine.grabbed = engine.selected = i;
+    }
+    if (a == AMOTION_EVENT_ACTION_MOVE && engine.grabbed != -1) {
+        float dx = x - engine.last_x;
+        engine.last_x = x;
+        agents[engine.grabbed].x = wx;
+        agents[engine.grabbed].y = wy;
+        agents[engine.grabbed].rot_vel += dx * ROT_SENS;
+    }
+    if (a == AMOTION_EVENT_ACTION_UP) {
+        engine.joyL_active = false;
+        engine.joyR_active = false;
+        engine.joyL_x = engine.joyL_y = 0.0f;
+        engine.joyR_x = engine.joyR_y = 0.0f;
+        engine.grabbed = -1;
+    }
     return 1;
 }
 
 /* ================= MAIN ================= */
 
-void android_main(struct android_app* app){
-    app->onInputEvent=handle_input;
-    while(!app->window){
-        int ev; android_poll_source* src;
-        ALooper_pollOnce(-1,NULL,&ev,(void**)&src);
-        if(src) src->process(app,src);
-    }
-
-    engine.width=ANativeWindow_getWidth(app->window);
-    engine.height=ANativeWindow_getHeight(app->window);
-    engine.cursor_ndc_x = 0.0f;
-    engine.cursor_ndc_y = 0.0f;
-
-    engine.display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    eglInitialize(engine.display,NULL,NULL);
-
-    EGLConfig cfg; EGLint n;
-    EGLint cfg_attr[]={EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_DEPTH_SIZE,16,EGL_NONE};
-    eglChooseConfig(engine.display,cfg_attr,&cfg,1,&n);
-    engine.surface=eglCreateWindowSurface(engine.display,cfg,app->window,NULL);
-    EGLint ctx_attr[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
-    engine.context=eglCreateContext(engine.display,cfg,EGL_NO_CONTEXT,ctx_attr);
-    eglMakeCurrent(engine.display,engine.surface,engine.surface,engine.context);
-
-    glEnable(GL_DEPTH_TEST);
-
-    /* world program */
-    GLuint prog=glCreateProgram();
-    glAttachShader(prog,compile(GL_VERTEX_SHADER,vs_src));
-    glAttachShader(prog,compile(GL_FRAGMENT_SHADER,fs_src));
-    glBindAttribLocation(prog,0,"aPos");
-    glBindAttribLocation(prog,1,"aColor");
-    glBindAttribLocation(prog,2,"aNormal");
-    glLinkProgram(prog);
-
-    GLint uMVP=glGetUniformLocation(prog,"uMVP");
-    GLint uWorld=glGetUniformLocation(prog,"uWorld");
-    GLint uSelected=glGetUniformLocation(prog,"uSelected");
-
-    /* cube geometry */
-    float cube[]={
-            -0.5,-0.5,0.5,1,0,0,0,0,1, 0.5,-0.5,0.5,1,0,0,0,0,1, 0.5,0.5,0.5,1,0,0,0,0,1,
-            -0.5,-0.5,0.5,1,0,0,0,0,1, 0.5,0.5,0.5,1,0,0,0,0,1, -0.5,0.5,0.5,1,0,0,0,0,1,
-            -0.5,-0.5,-0.5,0,1,0,0,0,-1, -0.5,0.5,-0.5,0,1,0,0,0,-1, 0.5,0.5,-0.5,0,1,0,0,0,-1,
-            -0.5,-0.5,-0.5,0,1,0,0,0,-1, 0.5,0.5,-0.5,0,1,0,0,0,-1, 0.5,-0.5,-0.5,0,1,0,0,0,-1,
-            -0.5,-0.5,-0.5,0,0,1,-1,0,0, -0.5,-0.5,0.5,0,0,1,-1,0,0, -0.5,0.5,0.5,0,0,1,-1,0,0,
-            -0.5,-0.5,-0.5,0,0,1,-1,0,0, -0.5,0.5,0.5,0,0,1,-1,0,0, -0.5,0.5,-0.5,0,0,1,-1,0,0,
-            0.5,-0.5,-0.5,1,1,0,1,0,0, 0.5,0.5,-0.5,1,1,0,1,0,0, 0.5,0.5,0.5,1,1,0,1,0,0,
-            0.5,-0.5,-0.5,1,1,0,1,0,0, 0.5,0.5,0.5,1,1,0,1,0,0, 0.5,-0.5,0.5,1,1,0,1,0,0,
-            -0.5,0.5,-0.5,0,1,1,0,1,0, -0.5,0.5,0.5,0,1,1,0,1,0, 0.5,0.5,0.5,0,1,1,0,1,0,
-            -0.5,0.5,-0.5,0,1,1,0,1,0, 0.5,0.5,0.5,0,1,1,0,1,0, 0.5,0.5,-0.5,0,1,1,0,1,0,
-            -0.5,-0.5,-0.5,1,0,1,0,-1,0, 0.5,-0.5,-0.5,1,0,1,0,-1,0, 0.5,-0.5,0.5,1,0,1,0,-1,0,
-            -0.5,-0.5,-0.5,1,0,1,0,-1,0, 0.5,-0.5,0.5,1,0,1,0,-1,0, -0.5,-0.5,0.5,1,0,1,0,-1,0
-    };
-
-    GLuint vbo;
-    glGenBuffers(1,&vbo);
-    glBindBuffer(GL_ARRAY_BUFFER,vbo);
-    glBufferData(GL_ARRAY_BUFFER,sizeof(cube),cube,GL_STATIC_DRAW);
-
-    /* axis */
-    float axis[]={
-            -5,0,0,1,0,0, 5,0,0,1,0,0,
-            0,-5,0,0,1,0, 0,5,0,0,1,0,
-            0,0,-5,0,0,1, 0,0,5,0,0,1
-    };
-
-    GLuint axis_vbo;
-    glGenBuffers(1,&axis_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER,axis_vbo);
-    glBufferData(GL_ARRAY_BUFFER,sizeof(axis),axis,GL_STATIC_DRAW);
-
-    GLuint axis_prog=glCreateProgram();
-    glAttachShader(axis_prog,compile(GL_VERTEX_SHADER,axis_vs));
-    glAttachShader(axis_prog,compile(GL_FRAGMENT_SHADER,axis_fs));
-    glBindAttribLocation(axis_prog,0,"aPos");
-    glBindAttribLocation(axis_prog,1,"aColor");
-    glLinkProgram(axis_prog);
-    GLint axis_uMVP=glGetUniformLocation(axis_prog,"uMVP");
-
-    /* cursor */
-    float cursor[] = {
-            -0.05f,0.0f, 1,1,1,   0.05f,0.0f, 1,1,1,
-            0.0f,-0.05f,1,1,1,   0.0f,0.05f,1,1,1
-    };
-    ;
-
-    GLuint cursor_vbo;
-    glGenBuffers(1,&cursor_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER,cursor_vbo);
-    glBufferData(GL_ARRAY_BUFFER,sizeof(cursor),cursor,GL_STATIC_DRAW);
-
-    GLuint cursor_prog=glCreateProgram();
-    glAttachShader(cursor_prog,compile(GL_VERTEX_SHADER,cursor_vs));
-    glAttachShader(cursor_prog,compile(GL_FRAGMENT_SHADER,cursor_fs));
-    glBindAttribLocation(cursor_prog,0,"aPos");
-    glBindAttribLocation(cursor_prog,1,"aColor");
-    glLinkProgram(cursor_prog);
-    GLint uCursor = glGetUniformLocation(cursor_prog, "uCursor");
-
-
-    float proj[16],view[16],tmp[16],tr[16],ry[16];
-    mat4_perspective(proj,1.1f,(float)engine.width/engine.height,0.1f,50);
-    mat4_rotate_y(ry,0.6f);
-    mat4_translate(tr,0,-0.6f,-7.5f);
-    mat4_mul(view,tr,ry);
-
-    agents[0].x=-1.3f; agents[1].x=1.3f;
-
-    while(true){
-        int ev; android_poll_source* src;
-        while(ALooper_pollOnce(0,NULL,&ev,(void**)&src)>=0) if(src) src->process(app,src);
-        for(int i=0;i<NUM_AGENTS;i++){ agents[i].rot+=agents[i].rot_vel; agents[i].rot_vel*=ROT_DAMP; }
-
-        glClearColor(0.05f,0.05f,0.08f,1);
-        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-
-        /* axes */
-        glUseProgram(axis_prog);
-        glBindBuffer(GL_ARRAY_BUFFER,axis_vbo);
-        glDisableVertexAttribArray(2);
-        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,6*sizeof(float),(void*)0);
-        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),(void*)(3*sizeof(float)));
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
-        float id[16],axis_mvp[16];
-        mat4_identity(id);
-        mat4_mul(tmp,view,id);
-        mat4_mul(axis_mvp,proj,tmp);
-        glUniformMatrix4fv(axis_uMVP,1,GL_FALSE,axis_mvp);
-        glDrawArrays(GL_LINES,0,6);
-
-        /* cubes */
-        glUseProgram(prog);
-        glBindBuffer(GL_ARRAY_BUFFER,vbo);
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,9*sizeof(float),(void*)0);
-        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,9*sizeof(float),(void*)(3*sizeof(float)));
-        glVertexAttribPointer(2,3,GL_FLOAT,GL_FALSE,9*sizeof(float),(void*)(6*sizeof(float)));
-        for(int i=0;i<NUM_AGENTS;i++){
-            float root[16],rot[16],scale[16],tmp2[16],model[16];
-            mat4_translate(root,agents[i].x,agents[i].y,0);
-            mat4_rotate_y(rot,agents[i].rot);
-            mat4_scale(scale,0.8f,1.2f,0.8f);
-            mat4_mul(tmp2,rot,scale);
-            mat4_mul(model,root,tmp2);
-            glUniform1f(uSelected,(float)(i==engine.selected));
-            draw_cube(uMVP,uWorld,proj,view,model);
+    void android_main(struct android_app *app) {
+        app->onInputEvent = handle_input;
+        while (!app->window) {
+            int ev;
+            android_poll_source *src;
+            ALooper_pollOnce(-1, NULL, &ev, (void **) &src);
+            if (src) src->process(app, src);
         }
 
-        /* cursor overlay */
-        glDisable(GL_DEPTH_TEST);
-        glUseProgram(cursor_prog);
-        glUniform2f(uCursor,
-                    engine.cursor_ndc_x,
-                    engine.cursor_ndc_y);
-        glBindBuffer(GL_ARRAY_BUFFER,cursor_vbo);
-        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,5*sizeof(float),(void*)0);
-        glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,5*sizeof(float),(void*)(2*sizeof(float)));
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
-        glDrawArrays(GL_LINES,0,4);
+        engine.width = ANativeWindow_getWidth(app->window);
+        engine.height = ANativeWindow_getHeight(app->window);
+        engine.cursor_ndc_x = 0.0f;
+        engine.cursor_ndc_y = 0.0f;
+        engine.cam_yaw = 0.6f;   // matches your old fixed rotation
+        engine.cam_pitch = 0.0f;
+
+        engine.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        eglInitialize(engine.display, NULL, NULL);
+
+        EGLConfig cfg;
+        EGLint n;
+        EGLint cfg_attr[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE,
+                             EGL_WINDOW_BIT, EGL_DEPTH_SIZE, 16, EGL_NONE};
+        eglChooseConfig(engine.display, cfg_attr, &cfg, 1, &n);
+        engine.surface = eglCreateWindowSurface(engine.display, cfg, app->window, NULL);
+        EGLint ctx_attr[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
+        engine.context = eglCreateContext(engine.display, cfg, EGL_NO_CONTEXT, ctx_attr);
+        eglMakeCurrent(engine.display, engine.surface, engine.surface, engine.context);
+
         glEnable(GL_DEPTH_TEST);
 
-        eglSwapBuffers(engine.display,engine.surface);
-        usleep(16000);
+        /* world program */
+        GLuint prog = glCreateProgram();
+        glAttachShader(prog, compile(GL_VERTEX_SHADER, vs_src));
+        glAttachShader(prog, compile(GL_FRAGMENT_SHADER, fs_src));
+        glBindAttribLocation(prog, 0, "aPos");
+        glBindAttribLocation(prog, 1, "aColor");
+        glBindAttribLocation(prog, 2, "aNormal");
+        glLinkProgram(prog);
+
+        GLint uMVP = glGetUniformLocation(prog, "uMVP");
+        GLint uWorld = glGetUniformLocation(prog, "uWorld");
+        GLint uSelected = glGetUniformLocation(prog, "uSelected");
+
+        /* cube geometry */
+        float cube[] = {
+                -0.5, -0.5, 0.5, 1, 0, 0, 0, 0, 1, 0.5, -0.5, 0.5, 1, 0, 0, 0, 0, 1, 0.5, 0.5, 0.5,
+                1, 0, 0, 0, 0, 1,
+                -0.5, -0.5, 0.5, 1, 0, 0, 0, 0, 1, 0.5, 0.5, 0.5, 1, 0, 0, 0, 0, 1, -0.5, 0.5, 0.5,
+                1, 0, 0, 0, 0, 1,
+                -0.5, -0.5, -0.5, 0, 1, 0, 0, 0, -1, -0.5, 0.5, -0.5, 0, 1, 0, 0, 0, -1, 0.5, 0.5,
+                -0.5, 0, 1, 0, 0, 0, -1,
+                -0.5, -0.5, -0.5, 0, 1, 0, 0, 0, -1, 0.5, 0.5, -0.5, 0, 1, 0, 0, 0, -1, 0.5, -0.5,
+                -0.5, 0, 1, 0, 0, 0, -1,
+                -0.5, -0.5, -0.5, 0, 0, 1, -1, 0, 0, -0.5, -0.5, 0.5, 0, 0, 1, -1, 0, 0, -0.5, 0.5,
+                0.5, 0, 0, 1, -1, 0, 0,
+                -0.5, -0.5, -0.5, 0, 0, 1, -1, 0, 0, -0.5, 0.5, 0.5, 0, 0, 1, -1, 0, 0, -0.5, 0.5,
+                -0.5, 0, 0, 1, -1, 0, 0,
+                0.5, -0.5, -0.5, 1, 1, 0, 1, 0, 0, 0.5, 0.5, -0.5, 1, 1, 0, 1, 0, 0, 0.5, 0.5, 0.5,
+                1, 1, 0, 1, 0, 0,
+                0.5, -0.5, -0.5, 1, 1, 0, 1, 0, 0, 0.5, 0.5, 0.5, 1, 1, 0, 1, 0, 0, 0.5, -0.5, 0.5,
+                1, 1, 0, 1, 0, 0,
+                -0.5, 0.5, -0.5, 0, 1, 1, 0, 1, 0, -0.5, 0.5, 0.5, 0, 1, 1, 0, 1, 0, 0.5, 0.5, 0.5,
+                0, 1, 1, 0, 1, 0,
+                -0.5, 0.5, -0.5, 0, 1, 1, 0, 1, 0, 0.5, 0.5, 0.5, 0, 1, 1, 0, 1, 0, 0.5, 0.5, -0.5,
+                0, 1, 1, 0, 1, 0,
+                -0.5, -0.5, -0.5, 1, 0, 1, 0, -1, 0, 0.5, -0.5, -0.5, 1, 0, 1, 0, -1, 0, 0.5, -0.5,
+                0.5, 1, 0, 1, 0, -1, 0,
+                -0.5, -0.5, -0.5, 1, 0, 1, 0, -1, 0, 0.5, -0.5, 0.5, 1, 0, 1, 0, -1, 0, -0.5, -0.5,
+                0.5, 1, 0, 1, 0, -1, 0
+        };
+
+        GLuint vbo;
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
+    /* ================= JOYSTICK RING ================= */
+#define RING_SEGMENTS 48
+
+    float joy_ring[RING_SEGMENTS * 5 * 2];
+
+    for (int i = 0; i < RING_SEGMENTS; i++) {
+        float a0 = (float)i / RING_SEGMENTS * 2.0f * M_PI;
+        float a1 = (float)(i + 1) / RING_SEGMENTS * 2.0f * M_PI;
+
+        int o = i * 10;
+
+        joy_ring[o + 0] = cosf(a0) * JOY_RADIUS;
+        joy_ring[o + 1] = sinf(a0) * JOY_RADIUS;
+        joy_ring[o + 2] = 1.0f;   // bright pink
+        joy_ring[o + 3] = 0.0f;
+        joy_ring[o + 4] = 0.7f;
+
+        joy_ring[o + 5] = cosf(a1) * JOY_RADIUS;
+        joy_ring[o + 6] = sinf(a1) * JOY_RADIUS;
+        joy_ring[o + 7] = 1.0f;
+        joy_ring[o + 8] = 0.0f;
+        joy_ring[o + 9] = 0.7f;
     }
-}
+
+    GLuint joy_ring_vbo;
+    glGenBuffers(1, &joy_ring_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, joy_ring_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(joy_ring), joy_ring, GL_STATIC_DRAW);
+
+    /* axis */
+        float axis[] = {
+                -5, 0, 0, 1, 0, 0, 5, 0, 0, 1, 0, 0,
+                0, -5, 0, 0, 1, 0, 0, 5, 0, 0, 1, 0,
+                0, 0, -5, 0, 0, 1, 0, 0, 5, 0, 0, 1
+        };
+
+        GLuint axis_vbo;
+        glGenBuffers(1, &axis_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, axis_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(axis), axis, GL_STATIC_DRAW);
+
+        GLuint axis_prog = glCreateProgram();
+        glAttachShader(axis_prog, compile(GL_VERTEX_SHADER, axis_vs));
+        glAttachShader(axis_prog, compile(GL_FRAGMENT_SHADER, axis_fs));
+        glBindAttribLocation(axis_prog, 0, "aPos");
+        glBindAttribLocation(axis_prog, 1, "aColor");
+        glLinkProgram(axis_prog);
+        GLint axis_uMVP = glGetUniformLocation(axis_prog, "uMVP");
+
+        /* cursor */
+        float cursor[] = {
+                -0.05f, 0.0f, 1, 1, 1, 0.05f, 0.0f, 1, 1, 1,
+                0.0f, -0.05f, 1, 1, 1, 0.0f, 0.05f, 1, 1, 1
+        };;
+
+        GLuint cursor_vbo;
+        glGenBuffers(1, &cursor_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, cursor_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(cursor), cursor, GL_STATIC_DRAW);
+    /* ================= JOYSTICK GEOMETRY ================= */
+    float joy_cross[] = {
+            -0.06f,  0.0f,  1.0f, 0.0f, 0.7f,
+            0.06f,  0.0f,  1.0f, 0.0f, 0.7f,
+            0.0f,  -0.06f, 1.0f, 0.0f, 0.7f,
+            0.0f,   0.06f, 1.0f, 0.0f, 0.7f
+    };
+
+    GLuint joy_vbo;
+    glGenBuffers(1, &joy_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, joy_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(joy_cross), joy_cross, GL_STATIC_DRAW);
+
+
+    GLuint cursor_prog = glCreateProgram();
+        glAttachShader(cursor_prog, compile(GL_VERTEX_SHADER, cursor_vs));
+        glAttachShader(cursor_prog, compile(GL_FRAGMENT_SHADER, cursor_fs));
+        glBindAttribLocation(cursor_prog, 0, "aPos");
+        glBindAttribLocation(cursor_prog, 1, "aColor");
+        glLinkProgram(cursor_prog);
+        GLint uCursor = glGetUniformLocation(cursor_prog, "uCursor");
+
+
+        float proj[16], view[16], tmp[16], tr[16], ry[16], rx[16], rot[16];
+
+        mat4_perspective(proj, 1.1f, (float) engine.width / engine.height, 0.1f, 50);
+        mat4_rotate_y(ry, engine.cam_yaw);
+        mat4_rotate_x(rx, engine.cam_pitch);
+        mat4_mul(rot, rx, ry);
+        mat4_translate(tr, 0, -0.6f, -7.5f);
+        mat4_mul(view, tr, rot);
+
+
+
+        agents[0].x = -1.3f;
+        agents[1].x = 1.3f;
+
+        while (true) {
+            int ev;
+            android_poll_source *src;
+            while (ALooper_pollOnce(0, NULL, &ev, (void **) &src) >= 0)
+                if (src)
+                    src->process(app, src);
+            for (int i = 0; i < NUM_AGENTS; i++) {
+                agents[i].rot += agents[i].rot_vel;
+                agents[i].rot_vel *= ROT_DAMP;
+            }
+
+            glClearColor(0.05f, 0.05f, 0.08f, 1);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            /* axes */
+            glUseProgram(axis_prog);
+            glBindBuffer(GL_ARRAY_BUFFER, axis_vbo);
+            glDisableVertexAttribArray(2);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *) 0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+            float id[16], axis_mvp[16];
+            mat4_identity(id);
+            mat4_mul(tmp, view, id);
+            mat4_mul(axis_mvp, proj, tmp);
+            glUniformMatrix4fv(axis_uMVP, 1, GL_FALSE, axis_mvp);
+            glDrawArrays(GL_LINES, 0, 6);
+
+            /* cubes */
+            glUseProgram(prog);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void *) 0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float),
+                                  (void *) (6 * sizeof(float)));
+            for (int i = 0; i < NUM_AGENTS; i++) {
+                float root[16], rot[16], scale[16], tmp2[16], model[16];
+                mat4_translate(root, agents[i].x, agents[i].y, 0);
+                mat4_rotate_y(rot, agents[i].rot);
+                mat4_scale(scale, 0.8f, 1.2f, 0.8f);
+                mat4_mul(tmp2, rot, scale);
+                mat4_mul(model, root, tmp2);
+                glUniform1f(uSelected, (float) (i == engine.selected));
+                draw_cube(uMVP, uWorld, proj, view, model);
+            }
+
+            /* cursor overlay */
+            glDisable(GL_DEPTH_TEST);
+            glUseProgram(cursor_prog);
+            glUniform2f(uCursor,
+                        engine.cursor_ndc_x,
+                        engine.cursor_ndc_y);
+            glBindBuffer(GL_ARRAY_BUFFER, cursor_vbo);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (2 * sizeof(float)));
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+            glDrawArrays(GL_LINES, 0, 4);
+            glEnable(GL_DEPTH_TEST);
+
+            /* ================= JOYSTICKS ================= */
+            glDisable(GL_DEPTH_TEST);
+            glUseProgram(cursor_prog);
+
+/* ---- RINGS ---- */
+            glBindBuffer(GL_ARRAY_BUFFER, joy_ring_vbo);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(2*sizeof(float)));
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+
+/* Left ring */
+            glUniform2f(uCursor, JOY_LEFT_X, JOY_Y_OFFSET);
+            glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
+
+/* Right ring */
+            glUniform2f(uCursor, JOY_RIGHT_X, JOY_Y_OFFSET);
+            glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
+
+/* ---- CROSSES ---- */
+            glBindBuffer(GL_ARRAY_BUFFER, joy_vbo);
+
+/* Left base */
+            glUniform2f(uCursor, JOY_LEFT_X, JOY_Y_OFFSET);
+            glDrawArrays(GL_LINES, 0, 4);
+
+/* Left thumb */
+            glUniform2f(
+                    uCursor,
+                    JOY_LEFT_X + engine.joyL_x * JOY_RADIUS,
+                    JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS
+            );
+            glDrawArrays(GL_LINES, 0, 4);
+
+/* Right base */
+            glUniform2f(uCursor, JOY_RIGHT_X, JOY_Y_OFFSET);
+            glDrawArrays(GL_LINES, 0, 4);
+
+/* Right thumb */
+            glUniform2f(
+                    uCursor,
+                    JOY_RIGHT_X + engine.joyR_x * JOY_RADIUS,
+                    JOY_Y_OFFSET + engine.joyR_y * JOY_RADIUS
+            );
+            glDrawArrays(GL_LINES, 0, 4);
+
+            glEnable(GL_DEPTH_TEST);
+
+
+
+            eglSwapBuffers(engine.display, engine.surface);
+            usleep(16000);
+        }
+    }
