@@ -712,7 +712,15 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
                     src->process(app, src);
         for (int i = 0; i < NUM_AGENTS; i++) {
             agents[i].rot += agents[i].rot_vel;
+
+            // Angular damping
+            agents[i].rot_vel *= ROT_DAMP;
+
+            // Kill tiny drift
+            if (fabsf(agents[i].rot_vel) < 0.0005f)
+                agents[i].rot_vel = 0.0f;
         }
+
 
 
         /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
