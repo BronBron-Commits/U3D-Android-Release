@@ -20,6 +20,11 @@
 #define LOCK_Y  0.85f
 #define LOCK_SPACING 0.18f
 #define LOCK_SIZE 0.06f
+#define GRID_SIZE     20      // half-extent in world units
+#define GRID_STEP     1.0f    // spacing
+#define GRID_COLOR_R  0.35f
+#define GRID_COLOR_G  0.35f
+#define GRID_COLOR_B  0.35f
 
 #define CAM_LOCK_START_X  -0.3f
 #define OBJ_LOCK_START_X   0.3f
@@ -491,7 +496,39 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glLinkProgram(axis_prog);
         GLint axis_uMVP = glGetUniformLocation(axis_prog, "uMVP");
 
-        /* cursor */
+
+    /* ================= GRID FLOOR ================= */
+
+    int grid_lines = (GRID_SIZE * 2 + 1) * 4;
+    float *grid = (float*)malloc(sizeof(float) * grid_lines * 6);
+
+    int gi = 0;
+    for (int i = -GRID_SIZE; i <= GRID_SIZE; i++) {
+        float v = i * GRID_STEP;
+
+        // X lines (along Z)
+        grid[gi++] = -GRID_SIZE * GRID_STEP; grid[gi++] = 0.0f; grid[gi++] = v;
+        grid[gi++] = GRID_COLOR_R; grid[gi++] = GRID_COLOR_G; grid[gi++] = GRID_COLOR_B;
+
+        grid[gi++] =  GRID_SIZE * GRID_STEP; grid[gi++] = 0.0f; grid[gi++] = v;
+        grid[gi++] = GRID_COLOR_R; grid[gi++] = GRID_COLOR_G; grid[gi++] = GRID_COLOR_B;
+
+        // Z lines (along X)
+        grid[gi++] = v; grid[gi++] = 0.0f; grid[gi++] = -GRID_SIZE * GRID_STEP;
+        grid[gi++] = GRID_COLOR_R; grid[gi++] = GRID_COLOR_G; grid[gi++] = GRID_COLOR_B;
+
+        grid[gi++] = v; grid[gi++] = 0.0f; grid[gi++] =  GRID_SIZE * GRID_STEP;
+        grid[gi++] = GRID_COLOR_R; grid[gi++] = GRID_COLOR_G; grid[gi++] = GRID_COLOR_B;
+    }
+
+    GLuint grid_vbo;
+    glGenBuffers(1, &grid_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, grid_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * gi, grid, GL_STATIC_DRAW);
+    free(grid);
+
+
+    /* cursor */
         float cursor[] = {
                 -0.05f, 0.0f, 1, 1, 1, 0.05f, 0.0f, 1, 1, 1,
                 0.0f, -0.05f, 1, 1, 1, 0.0f, 0.05f, 1, 1, 1
@@ -643,6 +680,25 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
         glDepthMask(GL_TRUE);       // restore depth writes
+
+        /* ================= GRID DRAW ================= */
+
+        glUseProgram(axis_prog);
+        glBindBuffer(GL_ARRAY_BUFFER, grid_vbo);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6*sizeof(float), (void*)0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6*sizeof(float), (void*)(3*sizeof(float)));
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+
+        float grid_id[16], grid_tmp[16], grid_mvp[16];
+        mat4_identity(grid_id);
+        mat4_mul(grid_tmp, view, grid_id);
+        mat4_mul(grid_mvp, proj, grid_tmp);
+
+        glUniformMatrix4fv(axis_uMVP, 1, GL_FALSE, grid_mvp);
+        glLineWidth(1.0f);
+        glDrawArrays(GL_LINES, 0, grid_lines);
 
         /* axes */
             glUseProgram(axis_prog);
