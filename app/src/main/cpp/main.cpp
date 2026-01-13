@@ -163,7 +163,7 @@ void draw_cube(GLint uMVP,GLint uWorld,float *proj,float *view,float *model){
 /* ================= DATA ================= */
 
 typedef struct {
-    float x, y;
+    float x, y, z;
     float rot, rot_vel;
 
     /* Procedural parameters */
@@ -333,7 +333,9 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
 
 
     float wx = (x / engine.width) * 8.0f - 4.0f;
-    float wy = ((engine.height - y) / engine.height) * 10.0f - 5.0f;
+    float wy = 0.0f;   // keep vertical stable for now
+    float wz = ((engine.height - y) / engine.height) * 10.0f - 5.0f;
+
 
     int a = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
     if (a == AMOTION_EVENT_ACTION_DOWN) {
@@ -360,8 +362,9 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
         if (!engine.lock_obj_x)
             agents[engine.grabbed].x = wx;
 
-        if (!engine.lock_obj_y)
-            agents[engine.grabbed].y = wy;
+        if (!engine.lock_obj_z)
+            agents[engine.grabbed].z = wz;
+
 
         agents[engine.grabbed].rot_vel += dx * (ROT_SENS * 0.35f);
     }
@@ -681,7 +684,13 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
 
 
     agents[0].x = -1.3f;
-        agents[1].x = 1.3f;
+    agents[0].y =  0.0f;
+    agents[0].z =  0.0f;
+
+    agents[1].x =  1.3f;
+    agents[1].y =  0.0f;
+    agents[1].z =  0.0f;
+
     /* ===== PROCEDURAL CHARACTER SETUP ===== */
     agents[0].height = 1.4f;
     agents[0].width  = 0.7f;
@@ -714,22 +723,22 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
             float forward_x = sinf(engine.cam_yaw);
             float forward_z = cosf(engine.cam_yaw);
 
-            float right_x   = cosf(engine.cam_yaw);
-            float right_z   = -sinf(engine.cam_yaw);
+            float right_x = cosf(engine.cam_yaw);
+            float right_z = -sinf(engine.cam_yaw);
 
             Agent *p = &agents[0]; // primary character
 
-            // Strafe
-            p->x -= (right_x * engine.joyL_x) * move_speed;
-            p->y -= (right_z * engine.joyL_x) * move_speed;
+            // Strafe (left / right)
+            p->x += right_x * engine.joyL_x * move_speed;
+            p->z += right_z * engine.joyL_x * move_speed;
 
             // Forward / backward
-            p->x += (forward_x * engine.joyL_y) * move_speed;
-            p->y += (forward_z * engine.joyL_y) * move_speed;
+            p->x += forward_x * engine.joyL_y * move_speed;
+            p->z += forward_z * engine.joyL_y * move_speed;
         }
 
 
-        mat4_rotate_y(ry, engine.cam_yaw);
+            mat4_rotate_y(ry, engine.cam_yaw);
             mat4_rotate_x(rx, engine.cam_pitch);
             mat4_mul(rot, rx, ry);
             mat4_translate(tr, engine.cam_x, engine.cam_y, engine.cam_z);
@@ -824,7 +833,7 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
 
 /* Root transform */
         float root[16];
-        mat4_translate(root, agents[i].x, agents[i].y, 0);
+        mat4_translate(root, agents[i].x, agents[i].y, agents[i].z);
 
 /* Shared rotation */
         float rotY[16];
@@ -854,7 +863,7 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
 
 /* ---- XZ RING (GROUND) ---- */
         float t[16], tmp2[16], mvp[16];
-        mat4_translate(t, agents[i].x, agents[i].y, 0.0f);
+        mat4_translate(t, agents[i].x, agents[i].y, agents[i].z);
         mat4_mul(tmp2, view, t);
         mat4_mul(mvp, proj, tmp2);
         glUniformMatrix4fv(axis_uMVP, 1, GL_FALSE, mvp);
