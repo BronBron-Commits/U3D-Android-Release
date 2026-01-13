@@ -297,14 +297,7 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
     }
 
 
-/* Left joystick */
-    float dxL = cx - JOY_LEFT_X;
-    float dyL = cy - JOY_Y_OFFSET;
-    if (dxL * dxL + dyL * dyL < JOY_RADIUS * JOY_RADIUS) {
-        engine.joyL_active = true;
-        engine.joyL_x = -dxL / JOY_RADIUS;
-        engine.joyL_y = dyL / JOY_RADIUS;
-    }
+
 
 
     if ((AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_DOWN) {
@@ -973,37 +966,8 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
             glEnableVertexAttribArray(1);
             glDrawArrays(GL_LINES, 0, 4);
             glEnable(GL_DEPTH_TEST);
-/* ================= JOYSTICKS ================= */
-        glDisable(GL_DEPTH_TEST);
-        glUseProgram(cursor_prog);
-
-/* ---- OUTER RINGS ---- */
-        glBindBuffer(GL_ARRAY_BUFFER, joy_ring_vbo);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(2*sizeof(float)));
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
-
-/* Left ring */
-        glUniform2f(uCursor, JOY_LEFT_X, JOY_Y_OFFSET);
-        glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
 
 
-
-/* ---- THUMB CIRCLES ---- */
-        glBindBuffer(GL_ARRAY_BUFFER, joy_thumb_vbo);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(2*sizeof(float)));
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
-
-/* Left thumb */
-        glUniform2f(
-                uCursor,
-                JOY_LEFT_X  - engine.joyL_x * JOY_RADIUS,
-                JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS
-        );
-        glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
 
         glEnable(GL_DEPTH_TEST);
 
