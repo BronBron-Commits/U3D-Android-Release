@@ -8,6 +8,13 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+/* ================= UI GLOBALS ================= */
+
+GLuint axis_btn_vbo[3] = {0, 0, 0};
+GLuint cursor_prog = 0;
+GLint  uCursor     = -1;
+
+
 
 #define NUM_AGENTS 2
 #define PICK_RADIUS 0.9f
@@ -29,6 +36,11 @@
 #define CAM_LOCK_START_X  -0.3f
 #define OBJ_LOCK_START_X   0.3f
 #define SEL_SEGMENTS 64
+#define AXIS_BTN_RADIUS   0.06f
+#define AXIS_BTN_SPACING  0.15f
+#define AXIS_BTN_Y        -0.85f
+#define AXIS_BTN_START_X  0.70f
+#define AXIS_BTN_SEGMENTS 32
 
 /* ================= WORLD SHADERS ================= */
 
@@ -388,6 +400,23 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
     return 1;
 }
 
+
+static void build_circle(float *out, int segments, float r, float cr, float cg, float cb) {
+    int k = 0;
+    for (int i = 0; i < segments; i++) {
+        float a0 = (float)i / segments * 2.0f * M_PI;
+        float a1 = (float)(i + 1) / segments * 2.0f * M_PI;
+
+        out[k++] = cosf(a0) * r;
+        out[k++] = sinf(a0) * r;
+        out[k++] = cr; out[k++] = cg; out[k++] = cb;
+
+        out[k++] = cosf(a1) * r;
+        out[k++] = sinf(a1) * r;
+        out[k++] = cr; out[k++] = cg; out[k++] = cb;
+    }
+}
+
 /* ================= MAIN ================= */
 
     void android_main(struct android_app *app) {
@@ -403,6 +432,7 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
         engine.height = ANativeWindow_getHeight(app->window);
     engine.cursor_ndc_x = 0.0f;
     engine.cursor_ndc_y = 0.0f;
+
 
 /* ===== INITIAL CAMERA POSE (GOOD DEFAULT) ===== */
     engine.cam_yaw   = 0.0f;     // facing +Z
@@ -424,8 +454,29 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
         EGLint ctx_attr[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
         engine.context = eglCreateContext(engine.display, cfg, EGL_NO_CONTEXT, ctx_attr);
         eglMakeCurrent(engine.display, engine.surface, engine.surface, engine.context);
+        
+    float axis_x_btn[AXIS_BTN_SEGMENTS * 2 * 5];
+    float axis_y_btn[AXIS_BTN_SEGMENTS * 2 * 5];
+    float axis_z_btn[AXIS_BTN_SEGMENTS * 2 * 5];
 
-        glEnable(GL_DEPTH_TEST);
+    build_circle(axis_x_btn, AXIS_BTN_SEGMENTS, AXIS_BTN_RADIUS, 1.0f, 0.3f, 0.3f); // X = red
+    build_circle(axis_y_btn, AXIS_BTN_SEGMENTS, AXIS_BTN_RADIUS, 0.3f, 1.0f, 0.3f); // Y = green
+    build_circle(axis_z_btn, AXIS_BTN_SEGMENTS, AXIS_BTN_RADIUS, 0.3f, 0.6f, 1.0f); // Z = blue
+
+
+    glGenBuffers(3, axis_btn_vbo);
+
+    glBindBuffer(GL_ARRAY_BUFFER, axis_btn_vbo[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(axis_x_btn), axis_x_btn, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, axis_btn_vbo[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(axis_y_btn), axis_y_btn, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, axis_btn_vbo[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(axis_z_btn), axis_z_btn, GL_STATIC_DRAW);
+
+
+    glEnable(GL_DEPTH_TEST);
 
         /* world program */
         GLuint prog = glCreateProgram();
@@ -500,34 +551,7 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
     glBindBuffer(GL_ARRAY_BUFFER, sky_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(sky_cube), sky_cube, GL_STATIC_DRAW);
 
-    /* ================= JOYSTICK RING ================= */
-#define RING_SEGMENTS 48
 
-    float joy_ring[RING_SEGMENTS * 5 * 2];
-
-    for (int i = 0; i < RING_SEGMENTS; i++) {
-        float a0 = (float)i / RING_SEGMENTS * 2.0f * M_PI;
-        float a1 = (float)(i + 1) / RING_SEGMENTS * 2.0f * M_PI;
-
-        int o = i * 10;
-
-        joy_ring[o + 0] = cosf(a0) * JOY_RADIUS;
-        joy_ring[o + 1] = sinf(a0) * JOY_RADIUS;
-        joy_ring[o + 2] = 1.0f;   // bright pink
-        joy_ring[o + 3] = 0.0f;
-        joy_ring[o + 4] = 0.7f;
-
-        joy_ring[o + 5] = cosf(a1) * JOY_RADIUS;
-        joy_ring[o + 6] = sinf(a1) * JOY_RADIUS;
-        joy_ring[o + 7] = 1.0f;
-        joy_ring[o + 8] = 0.0f;
-        joy_ring[o + 9] = 0.7f;
-    }
-
-    GLuint joy_ring_vbo;
-    glGenBuffers(1, &joy_ring_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, joy_ring_vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(joy_ring), joy_ring, GL_STATIC_DRAW);
     GLuint sky_prog = glCreateProgram();
     glAttachShader(sky_prog, compile(GL_VERTEX_SHADER, sky_vs));
     glAttachShader(sky_prog, compile(GL_FRAGMENT_SHADER, sky_fs));
@@ -975,7 +999,35 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
 
         glEnable(GL_DEPTH_TEST);
 
-            eglSwapBuffers(engine.display, engine.surface);
+        /* ================= AXIS BUTTON UI ================= */
+
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(cursor_prog);
+
+        float bx = AXIS_BTN_START_X;
+
+        for (int i = 0; i < 3; i++) {
+            glUniform2f(
+                    uCursor,
+                    bx + i * AXIS_BTN_SPACING,
+                    AXIS_BTN_Y
+            );
+
+            glBindBuffer(GL_ARRAY_BUFFER, axis_btn_vbo[i]);
+
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void*)(2 * sizeof(float)));
+
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+
+            glDrawArrays(GL_LINES, 0, AXIS_BTN_SEGMENTS * 2);
+        }
+
+        glEnable(GL_DEPTH_TEST);
+
+        eglSwapBuffers(engine.display, engine.surface);
             usleep(16000);
         }
     }
