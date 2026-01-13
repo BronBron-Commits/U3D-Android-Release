@@ -209,6 +209,8 @@ struct Engine{
     bool lock_obj_x;
     bool lock_obj_y;
     bool lock_obj_z;
+    float pinch_start_dist;
+    float pinch_start_cam_z;
 
 } engine;
 
@@ -227,6 +229,40 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
     engine.cursor_ndc_y = 1.0f - (y / engine.height) * 2.0f;
     float cx = engine.cursor_ndc_x;
     float cy = engine.cursor_ndc_y;
+    int pointers = AMotionEvent_getPointerCount(e);
+    int action = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
+
+
+/* ================= PINCH ZOOM ================= */
+    if (pointers == 2) {
+        float x0 = AMotionEvent_getX(e, 0);
+        float y0 = AMotionEvent_getY(e, 0);
+        float x1 = AMotionEvent_getX(e, 1);
+        float y1 = AMotionEvent_getY(e, 1);
+
+        float dx = x0 - x1;
+        float dy = y0 - y1;
+        float dist = sqrtf(dx*dx + dy*dy);
+
+        if (action == AMOTION_EVENT_ACTION_POINTER_DOWN) {
+            engine.pinch_start_dist  = dist;
+            engine.pinch_start_cam_z = engine.cam_z;
+            return 1;
+        }
+
+        if (action == AMOTION_EVENT_ACTION_MOVE && engine.pinch_start_dist > 0.0f) {
+            float delta = dist - engine.pinch_start_dist;
+
+            float zoom_speed = 0.015f;
+            engine.cam_z = engine.pinch_start_cam_z - delta * zoom_speed;
+
+            /* Clamp camera distance */
+            if (engine.cam_z > -2.0f)  engine.cam_z = -2.0f;
+            if (engine.cam_z < -40.0f) engine.cam_z = -40.0f;
+
+            return 1;
+        }
+    }
 
 /* Left joystick */
     float dxL = cx - JOY_LEFT_X;
@@ -323,6 +359,11 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         engine.joyL_x = engine.joyL_y = 0.0f;
         engine.joyR_x = engine.joyR_y = 0.0f;
         engine.grabbed = -1;
+        if (action == AMOTION_EVENT_ACTION_UP ||
+            action == AMOTION_EVENT_ACTION_POINTER_UP) {
+            engine.pinch_start_dist = 0.0f;
+        }
+
     }
     return 1;
 }
