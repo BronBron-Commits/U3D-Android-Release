@@ -211,6 +211,8 @@ struct Engine{
     bool lock_obj_z;
     float pinch_start_dist;
     float pinch_start_cam_z;
+    float pinch_last_cx;
+    float pinch_last_cy;
 
 } engine;
 
@@ -233,36 +235,61 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
     int action = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
 
 
-/* ================= PINCH ZOOM ================= */
+/* ================= TWO-FINGER CAMERA CONTROL ================= */
     if (pointers == 2) {
         float x0 = AMotionEvent_getX(e, 0);
         float y0 = AMotionEvent_getY(e, 0);
         float x1 = AMotionEvent_getX(e, 1);
         float y1 = AMotionEvent_getY(e, 1);
 
+        /* Pinch distance */
         float dx = x0 - x1;
         float dy = y0 - y1;
         float dist = sqrtf(dx*dx + dy*dy);
 
+        /* Centroid (screen space) */
+        float cx2 = (x0 + x1) * 0.5f;
+        float cy2 = (y0 + y1) * 0.5f;
+
         if (action == AMOTION_EVENT_ACTION_POINTER_DOWN) {
             engine.pinch_start_dist  = dist;
             engine.pinch_start_cam_z = engine.cam_z;
+            engine.pinch_last_cx     = cx2;
+            engine.pinch_last_cy     = cy2;
             return 1;
         }
 
         if (action == AMOTION_EVENT_ACTION_MOVE && engine.pinch_start_dist > 0.0f) {
-            float delta = dist - engine.pinch_start_dist;
+            /* ----- ZOOM ----- */
+            float zoom_delta = dist - engine.pinch_start_dist;
+            engine.cam_z = engine.pinch_start_cam_z - zoom_delta * 0.015f;
 
-            float zoom_speed = 0.015f;
-            engine.cam_z = engine.pinch_start_cam_z - delta * zoom_speed;
-
-            /* Clamp camera distance */
             if (engine.cam_z > -2.0f)  engine.cam_z = -2.0f;
             if (engine.cam_z < -40.0f) engine.cam_z = -40.0f;
+
+            /* ----- ROTATE ----- */
+            float dxc = cx2 - engine.pinch_last_cx;
+            float dyc = cy2 - engine.pinch_last_cy;
+
+            float rot_sens = 0.0055f;
+
+            if (!engine.lock_cam_x)
+                engine.cam_yaw   += dxc * rot_sens;
+
+            if (!engine.lock_cam_y)
+                engine.cam_pitch += dyc * rot_sens;
+
+            /* Clamp pitch */
+            if (engine.cam_pitch > 1.4f)  engine.cam_pitch = 1.4f;
+            if (engine.cam_pitch < -1.4f) engine.cam_pitch = -1.4f;
+
+            engine.pinch_last_cx = cx2;
+            engine.pinch_last_cy = cy2;
 
             return 1;
         }
     }
+
 
 /* Left joystick */
     float dxL = cx - JOY_LEFT_X;
