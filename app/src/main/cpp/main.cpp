@@ -28,6 +28,7 @@
 
 #define CAM_LOCK_START_X  -0.3f
 #define OBJ_LOCK_START_X   0.3f
+#define SEL_SEGMENTS 64
 
 /* ================= WORLD SHADERS ================= */
 
@@ -54,13 +55,14 @@ const char *fs_src =
         "  vec3 N = normalize(vNormal);\n"
         "  vec3 L = normalize(vec3(-0.4,-1.0,-0.6));\n"
         "  vec3 V = vec3(0.0,0.0,1.0);\n"
-        "  float d = max(dot(N,-L),0.0);\n"
-        "  vec3 H = normalize(-L+V);\n"
-        "  float s = pow(max(dot(N,H),0.0),24.0);\n"
-        "  vec3 base = vColor*(0.25+d*0.75)+vec3(s*0.35);\n"
-        "  vec3 highlight = base + uSelected * vec3(0.4, 0.4, 0.2);\n"
-        "  gl_FragColor = vec4(highlight,1.0);\n"
+        "  float diff = max(dot(N,-L),0.0);\n"
+        "  vec3 base = vColor * (0.25 + diff * 0.75);\n"
+        "  float rim = 1.0 - max(dot(N, V), 0.0);\n"
+        "  rim = smoothstep(0.4, 0.8, rim);\n"
+        "  vec3 outline = vec3(1.0, 0.9, 0.3) * rim * uSelected * 1.5;\n"
+        "  gl_FragColor = vec4(base + outline, 1.0);\n"
         "}\n";
+
 
 /* ================= AXIS SHADERS ================= */
 
@@ -223,17 +225,21 @@ static bool hit_box(float x, float y, float bx, float by) {
     return fabsf(x - bx) < LOCK_SIZE && fabsf(y - by) < LOCK_SIZE;
 }
 
-static int32_t handle_input(struct android_app*,AInputEvent* e) {
-    if (AInputEvent_getType(e) != AINPUT_EVENT_TYPE_MOTION) return 0;
+static int32_t handle_input(struct android_app*, AInputEvent* e) {
+    if (AInputEvent_getType(e) != AINPUT_EVENT_TYPE_MOTION)
+        return 0;
+
     float x = AMotionEvent_getX(e, 0);
     float y = AMotionEvent_getY(e, 0);
+
     engine.cursor_ndc_x = (x / engine.width) * 2.0f - 1.0f;
     engine.cursor_ndc_y = 1.0f - (y / engine.height) * 2.0f;
+
     float cx = engine.cursor_ndc_x;
     float cy = engine.cursor_ndc_y;
-    int pointers = AMotionEvent_getPointerCount(e);
-    int action = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
 
+    int pointers = AMotionEvent_getPointerCount(e);
+    int action   = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
 
 /* ================= TWO-FINGER CAMERA CONTROL ================= */
     if (pointers == 2) {
@@ -328,16 +334,25 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
     float wx = (x / engine.width) * 8.0f - 4.0f;
     float wy = ((engine.height - y) / engine.height) * 10.0f - 5.0f;
+
     int a = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
     if (a == AMOTION_EVENT_ACTION_DOWN) {
-        engine.last_x = x;
-        engine.last_y = y;
-        engine.grabbed = -1;
         engine.selected = -1;
-        for (int i = 0; i < NUM_AGENTS; i++)
-            if (fabsf(wx - agents[i].x) < PICK_RADIUS && fabsf(wy - agents[i].y) < PICK_RADIUS)
-                engine.grabbed = engine.selected = i;
+        engine.grabbed  = -1;
+
+        for (int i = 0; i < NUM_AGENTS; i++) {
+            if (fabsf(wx - agents[i].x) < PICK_RADIUS &&
+                fabsf(wy - agents[i].y) < PICK_RADIUS) {
+                engine.selected = i;
+                engine.grabbed  = i;
+                engine.last_x   = x;
+                engine.last_y   = y;
+                break;
+            }
+        }
     }
+
+
     if (a == AMOTION_EVENT_ACTION_MOVE && engine.grabbed != -1) {
         float dx = x - engine.last_x;
         engine.last_x = x;
@@ -351,12 +366,14 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         agents[engine.grabbed].rot_vel += dx * (ROT_SENS * 0.35f);
     }
 
-/* Clamp angular velocity */
-    if (agents[engine.grabbed].rot_vel > 0.08f)
-        agents[engine.grabbed].rot_vel = 0.08f;
+    if (engine.grabbed != -1) {
+        if (agents[engine.grabbed].rot_vel > 0.08f)
+            agents[engine.grabbed].rot_vel = 0.08f;
 
-    if (agents[engine.grabbed].rot_vel < -0.08f)
-        agents[engine.grabbed].rot_vel = -0.08f;
+        if (agents[engine.grabbed].rot_vel < -0.08f)
+            agents[engine.grabbed].rot_vel = -0.08f;
+    }
+
 
     if (a == AMOTION_EVENT_ACTION_UP) {
         engine.joyL_active = false;
@@ -540,6 +557,31 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glLinkProgram(axis_prog);
         GLint axis_uMVP = glGetUniformLocation(axis_prog, "uMVP");
 
+    /* ================= SELECTION RING ================= */
+
+    float sel_ring[SEL_SEGMENTS * 6 * 2];
+    int si = 0;
+
+    for (int i = 0; i < SEL_SEGMENTS; i++) {
+        float a0 = (float)i / SEL_SEGMENTS * 2.0f * M_PI;
+        float a1 = (float)(i + 1) / SEL_SEGMENTS * 2.0f * M_PI;
+
+        // XZ ring
+        sel_ring[si++] = cosf(a0) * PICK_RADIUS;
+        sel_ring[si++] = 0.0f;
+        sel_ring[si++] = sinf(a0) * PICK_RADIUS;
+        sel_ring[si++] = 1.0f; sel_ring[si++] = 1.0f; sel_ring[si++] = 0.2f;
+
+        sel_ring[si++] = cosf(a1) * PICK_RADIUS;
+        sel_ring[si++] = 0.0f;
+        sel_ring[si++] = sinf(a1) * PICK_RADIUS;
+        sel_ring[si++] = 1.0f; sel_ring[si++] = 1.0f; sel_ring[si++] = 0.2f;
+    }
+
+    GLuint sel_vbo;
+    glGenBuffers(1, &sel_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, sel_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(sel_ring), sel_ring, GL_STATIC_DRAW);
 
     /* ================= GRID FLOOR ================= */
 
@@ -771,6 +813,11 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
                                   (void *) (3 * sizeof(float)));
             glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float),
                                   (void *) (6 * sizeof(float)));
+
+        int char_index = 0; // currently only one character
+        float sel = (engine.selected == char_index) ? 1.0f : 0.0f;
+        glUniform1f(uSelected, sel);
+
         /* ================= CHARACTER (MULTI-PRIMITIVE) ================= */
 
         int i = 0;  // single character for now
@@ -793,10 +840,35 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             mat4_mul(m1, rotY, t);
             mat4_mul(m1, m1, s);
             mat4_mul(model, root, m1);
-
-            glUniform1f(uSelected, 0.0f);
             draw_cube(uMVP, uWorld, proj, view, model);
         }
+
+        /* ================= SELECTION RINGS ================= */
+        glUseProgram(axis_prog);
+        glBindBuffer(GL_ARRAY_BUFFER, sel_vbo);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6*sizeof(float), (void*)0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6*sizeof(float), (void*)(3*sizeof(float)));
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+
+/* ---- XZ RING (GROUND) ---- */
+        float t[16], tmp2[16], mvp[16];
+        mat4_translate(t, agents[i].x, agents[i].y, 0.0f);
+        mat4_mul(tmp2, view, t);
+        mat4_mul(mvp, proj, tmp2);
+        glUniformMatrix4fv(axis_uMVP, 1, GL_FALSE, mvp);
+        glDrawArrays(GL_LINES, 0, SEL_SEGMENTS * 2);
+
+/* ---- XY RING (VERTICAL) ---- */
+        float rx[16], t2[16];
+        mat4_rotate_x(rx, M_PI * 0.5f);
+        mat4_mul(t2, t, rx);
+        mat4_mul(tmp2, view, t2);
+        mat4_mul(mvp, proj, tmp2);
+        glUniformMatrix4fv(axis_uMVP, 1, GL_FALSE, mvp);
+        glDrawArrays(GL_LINES, 0, SEL_SEGMENTS * 2);
+
 
         /* ================= LEFT ARM ================= */
         {
