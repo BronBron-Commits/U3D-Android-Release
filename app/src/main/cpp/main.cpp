@@ -326,7 +326,7 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
 
 
     float wx = (x / engine.width) * 8.0f - 4.0f;
-    float wy = 0.0f;   // keep vertical stable for now
+    float wy = ((engine.height - y) / engine.height) * 4.0f - 2.0f;
     float wz = ((engine.height - y) / engine.height) * 10.0f - 5.0f;
 
 
@@ -355,8 +355,12 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
         if (!engine.lock_obj_x)
             agents[engine.grabbed].x = wx;
 
+        if (!engine.lock_obj_y)
+            agents[engine.grabbed].y = wy;
+
         if (!engine.lock_obj_z)
             agents[engine.grabbed].z = wz;
+
 
 
         agents[engine.grabbed].rot_vel += dx * (ROT_SENS * 0.35f);
