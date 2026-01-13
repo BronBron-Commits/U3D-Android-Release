@@ -300,14 +300,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         engine.joyL_y = dyL / JOY_RADIUS;
     }
 
-/* Right joystick */
-    float dxR = cx - JOY_RIGHT_X;
-    float dyR = cy - JOY_Y_OFFSET;
-    if (dxR * dxR + dyR * dyR < JOY_RADIUS * JOY_RADIUS) {
-        engine.joyR_active = true;
-        engine.joyR_x = dxR / JOY_RADIUS;
-        engine.joyR_y = dyR / JOY_RADIUS;
-    }
+
     if ((AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_DOWN) {
 
         /* ---- CAMERA LOCKS ---- */
@@ -329,21 +322,6 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
         if (hit_box(cx, cy, OBJ_LOCK_START_X + 2*LOCK_SPACING, LOCK_Y))
             engine.lock_obj_z = !engine.lock_obj_z;
-    }
-
-    if (engine.joyR_active) {
-        float look_sens = 0.035f;
-
-        if (!engine.lock_cam_x)
-            engine.cam_yaw += engine.joyR_x * look_sens;
-
-        if (!engine.lock_cam_y)
-            engine.cam_pitch -= engine.joyR_y * look_sens;
-
-
-        // Clamp pitch so camera never flips
-        if (engine.cam_pitch > 1.4f)  engine.cam_pitch = 1.4f;
-        if (engine.cam_pitch < -1.4f) engine.cam_pitch = -1.4f;
     }
 
 
@@ -382,9 +360,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
     if (a == AMOTION_EVENT_ACTION_UP) {
         engine.joyL_active = false;
-        engine.joyR_active = false;
         engine.joyL_x = engine.joyL_y = 0.0f;
-        engine.joyR_x = engine.joyR_y = 0.0f;
         engine.grabbed = -1;
         if (action == AMOTION_EVENT_ACTION_UP ||
             action == AMOTION_EVENT_ACTION_POINTER_UP) {
@@ -689,25 +665,27 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
 
         /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
-        /* ===== CAMERA MOVE (LEFT JOYSTICK – EVERY FRAME) ===== */
+/* ===== CHARACTER MOVE (LEFT JOYSTICK) ===== */
         if (engine.joyL_active) {
-            float move_speed = 0.06f;
+            float move_speed = 0.05f;
 
-            // Camera-relative forward & right vectors (yaw only)
             float forward_x = sinf(engine.cam_yaw);
             float forward_z = cosf(engine.cam_yaw);
 
             float right_x   = cosf(engine.cam_yaw);
             float right_z   = -sinf(engine.cam_yaw);
 
-            // Strafe (X)
-            if (!engine.lock_cam_x)
-                engine.cam_x += (right_x * engine.joyL_x) * move_speed;
+            Agent *p = &agents[0]; // primary character
 
-            // Forward / backward (Z)
-            if (!engine.lock_cam_z)
-                engine.cam_z += (forward_z * engine.joyL_y) * move_speed;
+            // Strafe
+            p->x += (right_x * engine.joyL_x) * move_speed;
+            p->y += (right_z * engine.joyL_x) * move_speed;
+
+            // Forward / backward
+            p->x += (forward_x * engine.joyL_y) * move_speed;
+            p->y += (forward_z * engine.joyL_y) * move_speed;
         }
+
 
         mat4_rotate_y(ry, engine.cam_yaw);
             mat4_rotate_x(rx, engine.cam_pitch);
@@ -921,9 +899,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glUniform2f(uCursor, JOY_LEFT_X, JOY_Y_OFFSET);
         glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
 
-/* Right ring */
-        glUniform2f(uCursor, JOY_RIGHT_X, JOY_Y_OFFSET);
-        glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
+
 
 /* ---- THUMB CIRCLES ---- */
         glBindBuffer(GL_ARRAY_BUFFER, joy_thumb_vbo);
@@ -937,14 +913,6 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
                 uCursor,
                 JOY_LEFT_X  + engine.joyL_x * JOY_RADIUS,
                 JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS
-        );
-        glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
-
-/* Right thumb */
-        glUniform2f(
-                uCursor,
-                JOY_RIGHT_X + engine.joyR_x * JOY_RADIUS,
-                JOY_Y_OFFSET + engine.joyR_y * JOY_RADIUS
         );
         glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
 
