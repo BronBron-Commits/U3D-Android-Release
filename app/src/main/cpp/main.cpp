@@ -10,6 +10,9 @@
 #include <string.h>
 
 #define NUM_AGENTS 2
+#define WORLD_UNIT 1.0f        // 1 unit = 1 meter
+#define GRID_STEP  1.0f        // grid spacing (meters)
+#define GRID_EXTENT 20         // grid extends ±20 units
 #define PICK_RADIUS 0.9f
 #define ROT_SENS 0.005f
 #define ROT_DAMP 0.82f
@@ -17,6 +20,9 @@
 #define JOY_Y_OFFSET -0.75f  // bottom of screen
 #define JOY_LEFT_X  -0.6f
 #define JOY_RIGHT_X  0.6f
+#define THUMB_ACTIVE_SCALE 1.35f
+#define THUMB_IDLE_SCALE   1.0f
+
 #define LOCK_Y  0.85f
 #define LOCK_SPACING 0.18f
 #define LOCK_SIZE 0.06f
@@ -118,7 +124,21 @@ const char *sky_fs =
         "  gl_FragColor = vec4(col, 1.0);\n"
         "}\n";
 
+/* ================= GRID SHADERS ================= */
 
+const char *grid_vs =
+        "attribute vec3 aPos;\n"
+        "uniform mat4 uMVP;\n"
+        "void main(){\n"
+        "  gl_Position = uMVP * vec4(aPos,1.0);\n"
+        "}\n";
+
+const char *grid_fs =
+        "precision mediump float;\n"
+        "uniform vec3 uColor;\n"
+        "void main(){\n"
+        "  gl_FragColor = vec4(uColor,1.0);\n"
+        "}\n";
 
 /* ================= MATH ================= */
 
@@ -141,6 +161,7 @@ void mat4_perspective(float *m,float fov,float asp,float n,float f){
     float t=tanf(fov*0.5f); memset(m,0,64);
     m[0]=1/(asp*t); m[5]=1/t; m[10]=-(f+n)/(f-n); m[11]=-1; m[14]=-(2*f*n)/(f-n);
 }
+
 
 /* ================= DRAW ================= */
 
@@ -170,6 +191,11 @@ typedef struct {
 } Agent;
 
 Agent agents[NUM_AGENTS];
+typedef enum {
+    SELECT_NONE = -1,
+    SELECT_AGENT0 = 0,
+    SELECT_AGENT1 = 1
+} SelectionID;
 
 GLuint compile(GLenum t,const char *s){
     GLuint sh=glCreateShader(t);
@@ -177,6 +203,16 @@ GLuint compile(GLenum t,const char *s){
     glCompileShader(sh);
     return sh;
 }
+
+/* ================= GRID DATA ================= */
+#define GRID_LINES ((GRID_EXTENT*2+1)*4)
+
+GLuint grid_vbo;
+GLuint grid_prog;
+GLint  grid_uMVP;
+GLint  grid_uColor;
+int    grid_vertex_count;
+
 
 struct Engine{
     EGLDisplay display;
@@ -205,8 +241,39 @@ struct Engine{
     bool lock_obj_y;
     bool lock_obj_z;
 
+    float cam_fov;
+
+/* ===== PINCH STATE ===== */
+    float pinch_start_dist;
+    float pinch_start_fov;
+
+    float twofinger_last_avg_x;
+    bool  twofinger_active;
+    float twofinger_last_avg_y;
+
 } engine;
 
+/* ================= SELECTION HELPERS ================= */
+
+static float dist2(float ax, float ay, float az,
+                   float bx, float by, float bz)
+{
+    float dx = ax - bx;
+    float dy = ay - by;
+    float dz = az - bz;
+    return dx*dx + dy*dy + dz*dz;
+}
+
+static void cursor_to_world(struct Engine *e, float *wx, float *wz)
+{
+    float nx = e->cursor_ndc_x;
+    float ny = e->cursor_ndc_y;
+
+    float depth = -e->cam_z;
+
+    *wx = e->cam_x + nx * depth;
+    *wz = e->cam_z + ny * depth;
+}
 
 
 /* ================= INPUT ================= */
@@ -214,113 +281,165 @@ static bool hit_box(float x, float y, float bx, float by) {
     return fabsf(x - bx) < LOCK_SIZE && fabsf(y - by) < LOCK_SIZE;
 }
 
-static int32_t handle_input(struct android_app*,AInputEvent* e) {
-    if (AInputEvent_getType(e) != AINPUT_EVENT_TYPE_MOTION) return 0;
+static float pinch_dist(AInputEvent* e) {
+    float dx = AMotionEvent_getX(e, 0) - AMotionEvent_getX(e, 1);
+    float dy = AMotionEvent_getY(e, 0) - AMotionEvent_getY(e, 1);
+    return sqrtf(dx*dx + dy*dy);
+}
+
+
+static int32_t handle_input(struct android_app*, AInputEvent* e) {
+    if (AInputEvent_getType(e) != AINPUT_EVENT_TYPE_MOTION)
+        return 0;
+
+    int action   = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
+    int pointers = AMotionEvent_getPointerCount(e);
+
     float x = AMotionEvent_getX(e, 0);
     float y = AMotionEvent_getY(e, 0);
+
     engine.cursor_ndc_x = (x / engine.width) * 2.0f - 1.0f;
     engine.cursor_ndc_y = 1.0f - (y / engine.height) * 2.0f;
+
     float cx = engine.cursor_ndc_x;
     float cy = engine.cursor_ndc_y;
 
-/* Left joystick */
+    /* ----- PINCH DOLLY (MOVE CAMERA) ----- */
+    if (pointers == 2) {
+        float x0 = AMotionEvent_getX(e, 0);
+        float y0 = AMotionEvent_getY(e, 0);
+        float x1 = AMotionEvent_getX(e, 1);
+        float y1 = AMotionEvent_getY(e, 1);
+
+// Average position in screen space
+        float avg_x = (x0 + x1) * 0.5f;
+        float avg_y = (y0 + y1) * 0.5f;
+
+
+        float dx = AMotionEvent_getX(e, 0) - AMotionEvent_getX(e, 1);
+        float dy = AMotionEvent_getY(e, 0) - AMotionEvent_getY(e, 1);
+        float dist = sqrtf(dx * dx + dy * dy);
+
+        if (action == AMOTION_EVENT_ACTION_POINTER_UP) {
+            engine.twofinger_active = false;
+            engine.pinch_start_dist = 0.0f;
+        }
+
+        if (action == AMOTION_EVENT_ACTION_POINTER_DOWN) {
+            engine.pinch_start_dist = dist;
+            engine.twofinger_last_avg_x = avg_x;
+            engine.twofinger_last_avg_y = avg_y;
+            engine.twofinger_active = true;
+            return 1;
+        }
+
+
+        if (action == AMOTION_EVENT_ACTION_MOVE && engine.pinch_start_dist > 0.0f) {
+
+            /* --- two-finger average movement --- */
+            float dx = avg_x - engine.twofinger_last_avg_x;
+            float dy = avg_y - engine.twofinger_last_avg_y;
+
+            engine.twofinger_last_avg_x = avg_x;
+            engine.twofinger_last_avg_y = avg_y;
+
+            /* --- horizontal rotate (yaw) --- */
+            float yaw_sens = 0.0035f;
+            engine.cam_yaw -= dx * yaw_sens;
+
+            /* --- vertical rotate (pitch) --- */
+            float pitch_sens = 0.0030f;
+            engine.cam_pitch -= dy * pitch_sens;
+
+            /* clamp pitch */
+            if (engine.cam_pitch > 1.4f) engine.cam_pitch = 1.4f;
+            if (engine.cam_pitch < -1.4f) engine.cam_pitch = -1.4f;
+
+            /* --- pinch zoom --- */
+            float delta = dist - engine.pinch_start_dist;
+            float zoom_speed = 0.015f;
+
+            engine.cam_z += delta * zoom_speed;
+
+            if (engine.cam_z > -2.0f) engine.cam_z = -2.0f;
+            if (engine.cam_z < -30.0f) engine.cam_z = -30.0f;
+
+            engine.pinch_start_dist = dist;
+            return 1;
+        }
+    }
+
+
+    /* ----- LEFT JOYSTICK ----- */
     float dxL = cx - JOY_LEFT_X;
     float dyL = cy - JOY_Y_OFFSET;
-    if (dxL * dxL + dyL * dyL < JOY_RADIUS * JOY_RADIUS) {
+    if (dxL*dxL + dyL*dyL < JOY_RADIUS*JOY_RADIUS) {
         engine.joyL_active = true;
         engine.joyL_x = -dxL / JOY_RADIUS;
-        engine.joyL_y = dyL / JOY_RADIUS;
+        engine.joyL_y =  dyL / JOY_RADIUS;
     }
 
-/* Right joystick */
+    /* ----- RIGHT JOYSTICK ----- */
     float dxR = cx - JOY_RIGHT_X;
     float dyR = cy - JOY_Y_OFFSET;
-    if (dxR * dxR + dyR * dyR < JOY_RADIUS * JOY_RADIUS) {
+    if (dxR*dxR + dyR*dyR < JOY_RADIUS*JOY_RADIUS) {
         engine.joyR_active = true;
-        engine.joyR_x = dxR / JOY_RADIUS;
-        engine.joyR_y = dyR / JOY_RADIUS;
-    }
-    if ((AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_DOWN) {
-
-        /* ---- CAMERA LOCKS ---- */
-        if (hit_box(cx, cy, CAM_LOCK_START_X + 0*LOCK_SPACING, LOCK_Y))
-            engine.lock_cam_x = !engine.lock_cam_x;
-
-        if (hit_box(cx, cy, CAM_LOCK_START_X + 1*LOCK_SPACING, LOCK_Y))
-            engine.lock_cam_y = !engine.lock_cam_y;
-
-        if (hit_box(cx, cy, CAM_LOCK_START_X + 2*LOCK_SPACING, LOCK_Y))
-            engine.lock_cam_z = !engine.lock_cam_z;
-
-        /* ---- OBJECT LOCKS ---- */
-        if (hit_box(cx, cy, OBJ_LOCK_START_X + 0*LOCK_SPACING, LOCK_Y))
-            engine.lock_obj_x = !engine.lock_obj_x;
-
-        if (hit_box(cx, cy, OBJ_LOCK_START_X + 1*LOCK_SPACING, LOCK_Y))
-            engine.lock_obj_y = !engine.lock_obj_y;
-
-        if (hit_box(cx, cy, OBJ_LOCK_START_X + 2*LOCK_SPACING, LOCK_Y))
-            engine.lock_obj_z = !engine.lock_obj_z;
+        engine.joyR_x = -dxR / JOY_RADIUS;
+        engine.joyR_y = -dyR / JOY_RADIUS;
     }
 
     if (engine.joyR_active) {
-        float look_sens = 0.035f;
+        float sens = 0.035f;
+        engine.cam_yaw   += engine.joyR_x * sens;
+        engine.cam_pitch -= engine.joyR_y * sens;
 
-        if (!engine.lock_cam_x)
-            engine.cam_yaw += engine.joyR_x * look_sens;
-
-        if (!engine.lock_cam_y)
-            engine.cam_pitch -= engine.joyR_y * look_sens;
-
-
-        // Clamp pitch so camera never flips
-        if (engine.cam_pitch > 1.4f)  engine.cam_pitch = 1.4f;
+        if (engine.cam_pitch >  1.4f) engine.cam_pitch =  1.4f;
         if (engine.cam_pitch < -1.4f) engine.cam_pitch = -1.4f;
     }
 
+    if (action == AMOTION_EVENT_ACTION_UP) {
 
+        float wx, wz;
+        cursor_to_world(&engine, &wx, &wz);
 
-    float wx = (x / engine.width) * 8.0f - 4.0f;
-    float wy = ((engine.height - y) / engine.height) * 10.0f - 5.0f;
-    int a = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
-    if (a == AMOTION_EVENT_ACTION_DOWN) {
-        engine.last_x = x;
-        engine.last_y = y;
-        engine.grabbed = -1;
         engine.selected = -1;
-        for (int i = 0; i < NUM_AGENTS; i++)
-            if (fabsf(wx - agents[i].x) < PICK_RADIUS && fabsf(wy - agents[i].y) < PICK_RADIUS)
-                engine.grabbed = engine.selected = i;
-    }
-    if (a == AMOTION_EVENT_ACTION_MOVE && engine.grabbed != -1) {
-        float dx = x - engine.last_x;
-        engine.last_x = x;
+        engine.grabbed  = 0;
 
-        if (!engine.lock_obj_x)
-            agents[engine.grabbed].x = wx;
+        for (int i = 0; i < NUM_AGENTS; i++) {
+            float ax = agents[i].x;
+            float ay = 0.6f;
+            float az = 0.0f;
 
-        if (!engine.lock_obj_y)
-            agents[engine.grabbed].y = wy;
+            if (dist2(wx, ay, wz, ax, ay, az) <
+                PICK_RADIUS * PICK_RADIUS)
+            {
+                engine.selected = i;
+                engine.grabbed  = 1;
+                return 1;
+            }
+        }
 
-        agents[engine.grabbed].rot_vel += dx * (ROT_SENS * 0.35f);
-    }
-
-/* Clamp angular velocity */
-    if (agents[engine.grabbed].rot_vel > 0.08f)
-        agents[engine.grabbed].rot_vel = 0.08f;
-
-    if (agents[engine.grabbed].rot_vel < -0.08f)
-        agents[engine.grabbed].rot_vel = -0.08f;
-
-    if (a == AMOTION_EVENT_ACTION_UP) {
         engine.joyL_active = false;
         engine.joyR_active = false;
         engine.joyL_x = engine.joyL_y = 0.0f;
         engine.joyR_x = engine.joyR_y = 0.0f;
-        engine.grabbed = -1;
+        engine.pinch_start_dist = 0.0f;
     }
+
+
+    if (action == AMOTION_EVENT_ACTION_UP) {
+        engine.joyL_active = false;
+        engine.joyR_active = false;
+        engine.joyL_x = engine.joyL_y = 0.0f;
+        engine.joyR_x = engine.joyR_y = 0.0f;
+        engine.pinch_start_dist = 0.0f;
+    }
+
     return 1;
 }
+
+
+
 
 /* ================= MAIN ================= */
 
@@ -337,6 +456,12 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         engine.height = ANativeWindow_getHeight(app->window);
     engine.cursor_ndc_x = 0.0f;
     engine.cursor_ndc_y = 0.0f;
+    engine.selected = -1;
+    engine.grabbed  = 0;
+    engine.twofinger_active = false;
+    engine.twofinger_last_avg_x = 0.0f;
+    engine.twofinger_last_avg_y = 0.0f;
+
 
 /* ===== INITIAL CAMERA POSE (GOOD DEFAULT) ===== */
     engine.cam_yaw   = 0.0f;     // facing +Z
@@ -406,6 +531,27 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glGenBuffers(1, &vbo);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
+    /* ================= GRID GEOMETRY ================= */
+
+    float grid_vertices[GRID_LINES * 3];
+    int gi = 0;
+
+    for (int i = -GRID_EXTENT; i <= GRID_EXTENT; i++) {
+        float v = i * GRID_STEP;
+
+        // XZ plane
+        grid_vertices[gi++] = -GRID_EXTENT; grid_vertices[gi++] = 0; grid_vertices[gi++] = v;
+        grid_vertices[gi++] =  GRID_EXTENT; grid_vertices[gi++] = 0; grid_vertices[gi++] = v;
+
+        grid_vertices[gi++] = v; grid_vertices[gi++] = 0; grid_vertices[gi++] = -GRID_EXTENT;
+        grid_vertices[gi++] = v; grid_vertices[gi++] = 0; grid_vertices[gi++] =  GRID_EXTENT;
+    }
+
+    grid_vertex_count = gi / 3;
+
+    glGenBuffers(1, &grid_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, grid_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(grid_vertices), grid_vertices, GL_STATIC_DRAW);
 
     /* ================= SKYBOX GEOMETRY ================= */
 
@@ -470,6 +616,17 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
     GLint sky_uMVP = glGetUniformLocation(sky_prog, "uMVP");
 
+    /* ================= GRID PROGRAM ================= */
+
+    grid_prog = glCreateProgram();
+    glAttachShader(grid_prog, compile(GL_VERTEX_SHADER, grid_vs));
+    glAttachShader(grid_prog, compile(GL_FRAGMENT_SHADER, grid_fs));
+    glBindAttribLocation(grid_prog, 0, "aPos");
+    glLinkProgram(grid_prog);
+
+    grid_uMVP   = glGetUniformLocation(grid_prog, "uMVP");
+    grid_uColor = glGetUniformLocation(grid_prog, "uColor");
+
 
     /* axis */
         float axis[] = {
@@ -504,7 +661,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
     /* ================= JOYSTICK GEOMETRY ================= */
 /* ================= JOYSTICK THUMB CIRCLE ================= */
 #define THUMB_RADIUS 0.06f
-#define THUMB_SEGMENTS 32
+#define THUMB_SEGMENTS 64
 
     float joy_thumb[THUMB_SEGMENTS * 5 * 2];
 
@@ -546,16 +703,6 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
         float proj[16], view[16], tmp[16], tr[16], ry[16], rx[16], rot[16];
 
-    float fov = 1.35f;  // ~77 degrees (wide-angle)
-    mat4_perspective(
-            proj,
-            fov,
-            (float)engine.width / (float)engine.height,
-            0.1f,
-            50.0f
-    );
-
-
 
     agents[0].x = -1.3f;
         agents[1].x = 1.3f;
@@ -582,11 +729,10 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             agents[i].rot += agents[i].rot_vel;
         }
 
-
-        /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
+                /* ===== CAMERA UPDATE (EVERY FRAME) ===== */
         /* ===== CAMERA MOVE (LEFT JOYSTICK – EVERY FRAME) ===== */
         if (engine.joyL_active) {
-            float move_speed = 0.06f;
+            float move_speed = 0.16f;
 
             // Camera-relative forward & right vectors (yaw only)
             float forward_x = sinf(engine.cam_yaw);
@@ -609,9 +755,17 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             mat4_mul(rot, rx, ry);
             mat4_translate(tr, engine.cam_x, engine.cam_y, engine.cam_z);
             mat4_mul(view, tr, rot);
+        mat4_perspective(
+                proj,
+                engine.cam_fov,
+                (float)engine.width / (float)engine.height,
+                0.1f,
+                50.0f
+        );
+                engine.cam_fov = 1.35f;
 
 
-            glClearColor(0.05f, 0.05f, 0.08f, 1);
+        glClearColor(0.05f, 0.05f, 0.08f, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         /* ================= SKYBOX DRAW ================= */
         glDepthMask(GL_FALSE);      // do NOT write depth
@@ -644,6 +798,26 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 
         glDepthMask(GL_TRUE);       // restore depth writes
 
+        /* ================= GRID DRAW ================= */
+
+        glUseProgram(grid_prog);
+        glBindBuffer(GL_ARRAY_BUFFER, grid_vbo);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+        glEnableVertexAttribArray(0);
+
+        float grid_mvp[16];
+        float idm[16];
+        mat4_identity(idm);
+        mat4_mul(tmp, view, idm);
+        mat4_mul(grid_mvp, proj, tmp);
+
+        glUniformMatrix4fv(grid_uMVP, 1, GL_FALSE, grid_mvp);
+
+/* XZ grid */
+        glUniform3f(grid_uColor, 0.35f, 0.35f, 0.35f);
+        glDrawArrays(GL_LINES, 0, grid_vertex_count);
+
+
         /* axes */
             glUseProgram(axis_prog);
             glBindBuffer(GL_ARRAY_BUFFER, axis_vbo);
@@ -669,6 +843,26 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
                                   (void *) (3 * sizeof(float)));
             glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float),
                                   (void *) (6 * sizeof(float)));
+
+/* ================= FLOOR ================= */
+        {
+            float t[16], s[16], model[16];
+
+            // Position floor slightly below character feet
+            mat4_translate(t, 0.0f, -1.1f, 0.0f);
+
+            // Make it wide and flat
+            mat4_scale(s, 20.0f, 0.1f, 20.0f);
+
+            mat4_mul(model, t, s);
+
+            // Not selectable
+            glUniform1f(uSelected, 0.0f);
+
+            draw_cube(uMVP, uWorld, proj, view, model);
+        }
+
+
         /* ================= CHARACTER (MULTI-PRIMITIVE) ================= */
 
         int i = 0;  // single character for now
@@ -801,6 +995,11 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         glUniform2f(uCursor, JOY_RIGHT_X, JOY_Y_OFFSET);
         glDrawArrays(GL_LINES, 0, RING_SEGMENTS * 2);
 
+
+        float thumbL_scale = engine.joyL_active ? THUMB_ACTIVE_SCALE : THUMB_IDLE_SCALE;
+        float thumbR_scale = engine.joyR_active ? THUMB_ACTIVE_SCALE : THUMB_IDLE_SCALE;
+
+
 /* ---- THUMB CIRCLES ---- */
         glBindBuffer(GL_ARRAY_BUFFER, joy_thumb_vbo);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
@@ -811,17 +1010,18 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 /* Left thumb */
         glUniform2f(
                 uCursor,
-                JOY_LEFT_X  + engine.joyL_x * JOY_RADIUS,
-                JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS
+                JOY_LEFT_X  - engine.joyL_x * JOY_RADIUS * thumbL_scale,
+                JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS * thumbL_scale
         );
         glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
 
 /* Right thumb */
         glUniform2f(
                 uCursor,
-                JOY_RIGHT_X + engine.joyR_x * JOY_RADIUS,
-                JOY_Y_OFFSET + engine.joyR_y * JOY_RADIUS
+                JOY_RIGHT_X - engine.joyR_x * JOY_RADIUS * thumbR_scale,
+                JOY_Y_OFFSET - engine.joyR_y * JOY_RADIUS * thumbR_scale
         );
+
         glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
 
         glEnable(GL_DEPTH_TEST);
