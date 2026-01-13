@@ -14,7 +14,9 @@ GLuint axis_btn_vbo[3] = {0, 0, 0};
 GLuint cursor_prog = 0;
 GLint  uCursor     = -1;
 
+/* ================= AXIS LABEL GLYPHS ================= */
 
+GLuint axis_label_vbo[3] = {0, 0, 0};
 
 #define NUM_AGENTS 2
 #define PICK_RADIUS 0.9f
@@ -400,6 +402,37 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
     return 1;
 }
 
+/* Screen-space line glyphs, centered at origin */
+
+static const float glyph_X[] = {
+        -0.03f, -0.03f, 1,1,1,
+        0.03f,  0.03f, 1,1,1,
+
+        -0.03f,  0.03f, 1,1,1,
+        0.03f, -0.03f, 1,1,1,
+};
+
+static const float glyph_Y[] = {
+        -0.03f,  0.03f, 1,1,1,
+        0.00f,  0.00f, 1,1,1,
+
+        0.03f,  0.03f, 1,1,1,
+        0.00f,  0.00f, 1,1,1,
+
+        0.00f,  0.00f, 1,1,1,
+        0.00f, -0.04f, 1,1,1,
+};
+
+static const float glyph_Z[] = {
+        -0.03f,  0.03f, 1,1,1,
+        0.03f,  0.03f, 1,1,1,
+
+        0.03f,  0.03f, 1,1,1,
+        -0.03f, -0.03f, 1,1,1,
+
+        -0.03f, -0.03f, 1,1,1,
+        0.03f, -0.03f, 1,1,1,
+};
 
 static void build_circle(float *out, int segments, float r, float cr, float cg, float cb) {
     int k = 0;
@@ -454,6 +487,19 @@ static void build_circle(float *out, int segments, float r, float cr, float cg, 
         EGLint ctx_attr[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
         engine.context = eglCreateContext(engine.display, cfg, EGL_NO_CONTEXT, ctx_attr);
         eglMakeCurrent(engine.display, engine.surface, engine.surface, engine.context);
+
+    /* ================= AXIS LABEL VBOs ================= */
+
+    glGenBuffers(3, axis_label_vbo);
+
+    glBindBuffer(GL_ARRAY_BUFFER, axis_label_vbo[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(glyph_X), glyph_X, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, axis_label_vbo[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(glyph_Y), glyph_Y, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, axis_label_vbo[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(glyph_Z), glyph_Z, GL_STATIC_DRAW);
 
     float axis_x_btn[AXIS_BTN_SEGMENTS * 2 * 5];
     float axis_y_btn[AXIS_BTN_SEGMENTS * 2 * 5];
@@ -1023,6 +1069,26 @@ static void build_circle(float *out, int segments, float r, float cr, float cg, 
             glEnableVertexAttribArray(1);
 
             glDrawArrays(GL_LINES, 0, AXIS_BTN_SEGMENTS * 2);
+
+            /* draw axis letter */
+            glBindBuffer(GL_ARRAY_BUFFER, axis_label_vbo[i]);
+
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void*)(2 * sizeof(float)));
+
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+
+/* glyph vertex counts */
+            int glyph_counts[3] = {
+                    4,  // X (2 lines)
+                    6,  // Y (3 lines)
+                    6   // Z (3 lines)
+            };
+
+            glDrawArrays(GL_LINES, 0, glyph_counts[i]);
+
         }
 
         glEnable(GL_DEPTH_TEST);
