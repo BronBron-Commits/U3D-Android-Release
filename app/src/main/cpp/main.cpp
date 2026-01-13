@@ -39,7 +39,7 @@ GLint  uCursor     = -1;
 #define AXIS_BTN_RADIUS   0.06f
 #define AXIS_BTN_SPACING  0.15f
 #define AXIS_BTN_Y        -0.85f
-#define AXIS_BTN_START_X  0.70f
+#define AXIS_BTN_START_X  0.55f
 #define AXIS_BTN_SEGMENTS 32
 
 /* ================= WORLD SHADERS ================= */
@@ -454,7 +454,7 @@ static void build_circle(float *out, int segments, float r, float cr, float cg, 
         EGLint ctx_attr[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
         engine.context = eglCreateContext(engine.display, cfg, EGL_NO_CONTEXT, ctx_attr);
         eglMakeCurrent(engine.display, engine.surface, engine.surface, engine.context);
-        
+
     float axis_x_btn[AXIS_BTN_SEGMENTS * 2 * 5];
     float axis_y_btn[AXIS_BTN_SEGMENTS * 2 * 5];
     float axis_z_btn[AXIS_BTN_SEGMENTS * 2 * 5];
