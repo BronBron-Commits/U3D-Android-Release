@@ -229,7 +229,8 @@ struct Engine{
     float pinch_start_cam_z;
     float pinch_last_cx;
     float pinch_last_cy;
-
+    /* ===== ACTIVE AXIS (UI) ===== */
+    int active_axis;   // -1 = none, 0 = X, 1 = Y, 2 = Z
 } engine;
 
 
@@ -237,6 +238,12 @@ struct Engine{
 /* ================= INPUT ================= */
 static bool hit_box(float x, float y, float bx, float by) {
     return fabsf(x - bx) < LOCK_SIZE && fabsf(y - by) < LOCK_SIZE;
+}
+
+static bool hit_circle(float x, float y, float cx, float cy, float r) {
+    float dx = x - cx;
+    float dy = y - cy;
+    return (dx * dx + dy * dy) <= (r * r);
 }
 
 static int32_t handle_input(struct android_app*, AInputEvent* e) {
@@ -315,6 +322,16 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
 
 
     if ((AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_DOWN) {
+        /* ===== AXIS BUTTON TOGGLE ===== */
+        for (int i = 0; i < 3; i++) {
+            float bx = AXIS_BTN_START_X + i * AXIS_BTN_SPACING;
+            float by = AXIS_BTN_Y;
+
+            if (hit_circle(cx, cy, bx, by, AXIS_BTN_RADIUS)) {
+                engine.active_axis = (engine.active_axis == i) ? -1 : i;
+                return 1; // consume touch
+            }
+        }
 
         /* ---- CAMERA LOCKS ---- */
         if (hit_box(cx, cy, CAM_LOCK_START_X + 0*LOCK_SPACING, LOCK_Y))
@@ -366,14 +383,22 @@ static int32_t handle_input(struct android_app*, AInputEvent* e) {
         float dx = x - engine.last_x;
         engine.last_x = x;
 
-        if (!engine.lock_obj_x)
-            agents[engine.grabbed].x = wx;
+        /* ===== AXIS-CONSTRAINED MOVE ===== */
+        if (engine.active_axis == -1) {
+            if (!engine.lock_obj_x) agents[engine.grabbed].x = wx;
+            if (!engine.lock_obj_y) agents[engine.grabbed].y = wy;
+            if (!engine.lock_obj_z) agents[engine.grabbed].z = wz;
+        } else {
+            if (engine.active_axis == 0 && !engine.lock_obj_x)
+                agents[engine.grabbed].x = wx;
 
-        if (!engine.lock_obj_y)
-            agents[engine.grabbed].y = wy;
+            if (engine.active_axis == 1 && !engine.lock_obj_y)
+                agents[engine.grabbed].y = wy;
 
-        if (!engine.lock_obj_z)
-            agents[engine.grabbed].z = wz;
+            if (engine.active_axis == 2 && !engine.lock_obj_z)
+                agents[engine.grabbed].z = wz;
+        }
+
 
 
 
@@ -465,6 +490,7 @@ static void build_circle(float *out, int segments, float r, float cr, float cg, 
         engine.height = ANativeWindow_getHeight(app->window);
     engine.cursor_ndc_x = 0.0f;
     engine.cursor_ndc_y = 0.0f;
+    engine.active_axis = -1;
 
 
 /* ===== INITIAL CAMERA POSE (GOOD DEFAULT) ===== */
@@ -1068,7 +1094,14 @@ static void build_circle(float *out, int segments, float r, float cr, float cg, 
             glEnableVertexAttribArray(0);
             glEnableVertexAttribArray(1);
 
+            if (engine.active_axis == i)
+                glLineWidth(4.0f);
+            else
+                glLineWidth(1.5f);
+
             glDrawArrays(GL_LINES, 0, AXIS_BTN_SEGMENTS * 2);
+            glLineWidth(1.0f);
+
 
             /* draw axis letter */
             glBindBuffer(GL_ARRAY_BUFFER, axis_label_vbo[i]);
