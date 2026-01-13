@@ -262,7 +262,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
         if (action == AMOTION_EVENT_ACTION_MOVE && engine.pinch_start_dist > 0.0f) {
             /* ----- ZOOM ----- */
             float zoom_delta = dist - engine.pinch_start_dist;
-            engine.cam_z = engine.pinch_start_cam_z - zoom_delta * 0.015f;
+            engine.cam_z = engine.pinch_start_cam_z + zoom_delta * 0.015f;
 
             if (engine.cam_z > -2.0f)  engine.cam_z = -2.0f;
             if (engine.cam_z < -40.0f) engine.cam_z = -40.0f;
