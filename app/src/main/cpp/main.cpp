@@ -678,8 +678,8 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
             Agent *p = &agents[0]; // primary character
 
             // Strafe
-            p->x += (right_x * engine.joyL_x) * move_speed;
-            p->y += (right_z * engine.joyL_x) * move_speed;
+            p->x -= (right_x * engine.joyL_x) * move_speed;
+            p->y -= (right_z * engine.joyL_x) * move_speed;
 
             // Forward / backward
             p->x += (forward_x * engine.joyL_y) * move_speed;
@@ -911,7 +911,7 @@ static int32_t handle_input(struct android_app*,AInputEvent* e) {
 /* Left thumb */
         glUniform2f(
                 uCursor,
-                JOY_LEFT_X  + engine.joyL_x * JOY_RADIUS,
+                JOY_LEFT_X  - engine.joyL_x * JOY_RADIUS,
                 JOY_Y_OFFSET + engine.joyL_y * JOY_RADIUS
         );
         glDrawArrays(GL_LINES, 0, THUMB_SEGMENTS * 2);
